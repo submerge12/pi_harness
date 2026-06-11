@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.tmp/
+.tmp-observability-test/
+.pi-harness/
+.ai/checkpoints/
+
+*.log
+*.out
+*.err
+.DS_Store
+Thumbs.db

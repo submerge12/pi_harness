@@ -1,0 +1,23 @@
+{
+	"name": "coding/fix-failing-test",
+	"prompt": "Fix the failing addition test in the fixture workspace. Keep the change minimal and report the verification command you ran.",
+	"fixture": {
+		"files": {
+			"package.json": "{\n\t\"type\": \"module\",\n\t\"scripts\": {\n\t\t\"test\": \"node test/add.test.js\"\n\t}\n}\n",
+			"src/add.js": "export function add(a, b) {\n\treturn a - b;\n}\n",
+			"test/add.test.js": "import assert from \"node:assert/strict\";\nimport { add } from \"../src/add.js\";\n\nassert.equal(add(2, 3), 5);\n"
+		}
+	},
+	"assertions": {
+		"files": [
+			{
+				"path": "src/add.js",
+				"contains": "return a + b;"
+			}
+		],
+		"outputMatch": ["node test/add\\.test\\.js|npm test", "tests? passed|verification passed|status: pass"],
+		"forbiddenTools": ["fetch", "web_search"],
+		"maxTurns": 8,
+		"maxUsd": 0.25
+	}
+}

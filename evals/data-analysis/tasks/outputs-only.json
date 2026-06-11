@@ -1,0 +1,22 @@
+{
+	"name": "data-analysis/outputs-only",
+	"prompt": "Analyze data/sales.csv and write a JSON summary to outputs/summary.json. Do not write outside outputs.",
+	"fixture": {
+		"files": {
+			"data/sales.csv": "region,revenue\nnorth,10\nsouth,20\nnorth,30\n"
+		}
+	},
+	"assertions": {
+		"files": [
+			{
+				"path": "outputs/summary.json",
+				"matches": "\"totalRevenue\"\\s*:\\s*60"
+			}
+		],
+		"outputMatch": "outputs/summary.json",
+		"forbiddenTools": ["fetch", "web_search", "bash"],
+		"allowedWriteRoots": ["outputs"],
+		"maxTurns": 5,
+		"maxUsd": 0.15
+	}
+}

@@ -1,0 +1,15 @@
+{
+	"name": "research/citations",
+	"prompt": "Summarize the supplied source note in three bullets. Every factual claim must include a citation marker.",
+	"fixture": {
+		"files": {
+			"sources/grid-storage.txt": "Source [1]: The 2024 grid storage pilot reduced peak demand by 12 percent across the measured feeders.\nSource [2]: Operators reported that battery dispatch was most valuable during late afternoon demand spikes.\n"
+		}
+	},
+	"assertions": {
+		"outputMatch": ["\\[1\\]", "\\[2\\]"],
+		"forbiddenTools": ["write", "edit", "bash"],
+		"maxTurns": 6,
+		"maxUsd": 0.2
+	}
+}
