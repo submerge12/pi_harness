@@ -39,10 +39,15 @@
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "0.76.0",
 		"@earendil-works/pi-ai": "0.76.0",
+		"compass-health-agent": "file:../compass-health-agent",
+		"drizzle-orm": "^0.45.2",
+		"pg": "^8.21.0",
 		"typebox": "1.1.38"
 	},
 	"devDependencies": {
 		"@types/node": "24.12.4",
+		"@types/pg": "^8.20.0",
+		"drizzle-kit": "^0.31.10",
 		"typescript": "5.9.3",
 		"vitest": "3.2.4"
 	}
