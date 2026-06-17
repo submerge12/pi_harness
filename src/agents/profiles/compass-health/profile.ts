@@ -56,7 +56,7 @@ async function proactiveCheck(): Promise<string> {
 
 	if (hour >= 23 || hour < 1) {
 		const summary = await handlers.handleDailySummary(ctx, { date: yesterdayIso() });
-		return `Daily summary for ${summary.date}: ${summary.eaten.kcal} kcal eaten (target ${summary.target.kcal}), ${summary.remaining.kcal} kcal remaining. Water: ${summary.water.totalMl}ml. Exercise: ${summary.exercise.kcalBurned} kcal burned.`;
+		return `Daily summary for ${summary.date}: ${summary.eaten.kcal} kcal eaten (target ${summary.target.kcal}), ${summary.remaining.kcal} kcal remaining. Water: ${summary.water.totalMl}/${summary.water.targetMl}ml. Exercise: ${summary.exercise.durationMinutes}/${summary.exercise.targetMinutes} min, ${summary.exercise.kcalBurned} kcal burned.`;
 	}
 
 	const mealType = hour < 10 ? "breakfast" : hour < 14 ? "lunch" : "dinner";
