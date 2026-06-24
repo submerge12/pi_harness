@@ -7,6 +7,7 @@ import type { AskPermissionCallback } from "../tools/types.ts";
 export interface PermissionRequest {
 	toolName: string;
 	args?: unknown;
+	subject?: string;
 }
 
 export type PermissionPromptDecision = "allow" | "deny" | "always" | "never";
@@ -32,6 +33,10 @@ function stringifyArgs(args: unknown): string {
 	}
 }
 
+function permissionKey(toolName: string, subject: string | undefined): string {
+	return subject ? `${toolName}:${subject}` : toolName;
+}
+
 export function parsePermissionPromptAnswer(answer: string): PermissionPromptDecision {
 	const normalized = answer.trim().toLowerCase();
 	if (normalized === "y" || normalized === "yes") return "allow";
@@ -47,6 +52,7 @@ export async function promptForPermissionDecision(
 	const input = options.input ?? defaultInput;
 	const output = options.output ?? defaultOutput;
 	output.write(`Allow tool ${request.toolName}?\n`);
+	if (request.subject) output.write(`subject: ${request.subject}\n`);
 	output.write(`args: ${stringifyArgs(request.args)}\n`);
 	const readline = createInterface({ input, output });
 	try {
@@ -67,24 +73,26 @@ export async function promptForPermission(
 
 export function createStoredPermissionCallback(options: StoredPermissionCallbackOptions): AskPermissionCallback {
 	const prompt = options.prompt ?? ((request) => promptForPermissionDecision(request));
-	return async (toolName, args) => {
-		if (options.store.isSessionAllowed(toolName)) return true;
+	return async (toolName, args, context) => {
+		const subject = context?.subject;
+		const key = permissionKey(toolName, subject);
+		if (options.store.isSessionAllowed(key)) return true;
 
-		const stored = await options.store.getToolPermission(toolName);
+		const stored = await options.store.getToolPermission(key);
 		if (stored === "allow") return true;
 		if (stored === "deny") return false;
 
-		const decision = await prompt({ toolName, args });
+		const decision = await prompt({ toolName, args, subject });
 		if (decision === "allow") {
-			options.store.allowForSession(toolName);
+			options.store.allowForSession(key);
 			return true;
 		}
 		if (decision === "always") {
-			await options.store.setToolPermission(toolName, "allow");
+			await options.store.setToolPermission(key, "allow");
 			return true;
 		}
 		if (decision === "never") {
-			await options.store.setToolPermission(toolName, "deny");
+			await options.store.setToolPermission(key, "deny");
 			return false;
 		}
 		return false;

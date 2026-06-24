@@ -83,9 +83,9 @@ describe("PruneExecutor", () => {
 		expect(context).toContain(messages[5]);
 		expect(context).toContainEqual(userMessage("next request"));
 		expect(context).not.toContain(messages[2]);
-		if (context.includes(messages[1])) {
-			expect(context).toContainEqual(expect.objectContaining({ role: "toolResult", toolCallId: "call-1" }));
-		}
+		expect(context).toContainEqual(expect.objectContaining({ role: "toolResult", toolCallId: "call-1" }));
+		expect(JSON.stringify(context)).toContain("retrievable anchor:");
+		expect(JSON.stringify(context)).toContain("removed summary:");
 		expect(customEntries).toHaveLength(1);
 		expect(customEntries[0]).toMatchObject({
 			customType: "prune",

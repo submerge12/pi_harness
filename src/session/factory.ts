@@ -2,6 +2,15 @@ import { JsonlSessionRepo, type JsonlSessionMetadata, type Session } from "@eare
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { repairJsonlTail, type JsonlTailRecoveryResult } from "./recovery.ts";
 
+export {
+	createFileDomainSessionStore,
+	type Decision,
+	type DomainSession,
+	type DomainSessionStore,
+	type FileDomainSessionStoreOptions,
+	type Question,
+} from "./domain-session.ts";
+
 export interface JsonlSessionFactoryOptions {
 	cwd: string;
 	sessionsRoot: string;

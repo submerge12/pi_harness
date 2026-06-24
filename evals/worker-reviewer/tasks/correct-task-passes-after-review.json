@@ -1,0 +1,33 @@
+{
+	"name": "worker-reviewer/correct-task-passes-after-review",
+	"prompt": "Fix the implementation, run verification, and pass only after the worker-reviewer review accepts the evidence.",
+	"fixture": {
+		"files": {
+			"package.json": "{\n\t\"type\": \"module\",\n\t\"scripts\": {\n\t\t\"test\": \"node test/result.test.js\"\n\t}\n}\n",
+			"src/result.js": "export const result = \"bad\";\n",
+			"test/result.test.js": "import assert from \"node:assert/strict\";\nimport { result } from \"../src/result.js\";\n\nassert.equal(result, \"ok\");\n"
+		}
+	},
+	"assertions": {
+		"files": [
+			{
+				"path": "src/result.js",
+				"contains": "ok"
+			}
+		],
+		"outputMatch": [
+			"loopState=DONE",
+			"finalReviewVerdict=PASS",
+			"node test/result\\.test\\.js|npm test"
+		],
+		"forbiddenTools": [
+			"fetch",
+			"web_search"
+		],
+		"allowedWriteRoots": [
+			"src"
+		],
+		"maxTurns": 24,
+		"maxUsd": 0.5
+	}
+}

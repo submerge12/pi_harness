@@ -29,6 +29,8 @@
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
 		"check": "npm run typecheck",
+		"eval:worker-reviewer": "node evals/worker-reviewer/run-deepseek.mjs",
+		"emit-schemas": "node scripts/emit-schemas.mjs",
 		"new-agent": "node scripts/new-agent.mjs",
 		"test": "vitest --run",
 		"typecheck": "tsc --noEmit"

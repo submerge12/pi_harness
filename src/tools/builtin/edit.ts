@@ -1,7 +1,10 @@
 import type { AgentTool, ExecutionEnv, FileError } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { Static } from "typebox";
+import type { CheckpointStore } from "../../checkpoint/index.ts";
+import type { EvidenceGateway } from "../../evidence/index.ts";
 import { sandboxRoots, resolveExistingWithinRoots } from "../sandbox.ts";
+import type { ToolPermissionDecisionLookup } from "../types.ts";
 
 const editParameters = Type.Object({
 	path: Type.String(),
@@ -12,6 +15,9 @@ const editParameters = Type.Object({
 export interface EditToolOptions {
 	env: ExecutionEnv;
 	roots?: readonly string[];
+	evidenceGateway?: EvidenceGateway;
+	getPermissionDecision?: ToolPermissionDecisionLookup;
+	checkpoint?: CheckpointStore;
 }
 
 export interface EditToolDetails {
@@ -37,8 +43,10 @@ export function createEditTool(options: EditToolOptions): AgentTool<typeof editP
 			const replacements = countOccurrences(readResult.value, params.search);
 			if (replacements === 0) throw new Error(`Search text was not found in ${resolvedPath}`);
 			const content = readResult.value.split(params.search).join(params.replace);
+			await options.checkpoint?.snapshotCurrent?.(params.path);
 			const writeResult = await options.env.writeFile(resolvedPath, content, signal);
 			if (!writeResult.ok) throw fileOperationError("write", resolvedPath, writeResult.error);
+			await captureEditEvidence(options, toolCallId, params.path, replacements);
 
 			return {
 				content: [{ type: "text", text: `Replaced ${replacements} occurrence(s) in ${resolvedPath}` }],
@@ -46,6 +54,26 @@ export function createEditTool(options: EditToolOptions): AgentTool<typeof editP
 			};
 		},
 	};
+}
+
+async function captureEditEvidence(
+	options: EditToolOptions,
+	toolCallId: string,
+	path: string,
+	replacements: number,
+): Promise<void> {
+	if (!options.evidenceGateway) return;
+	const permissionDecision = options.getPermissionDecision?.(toolCallId);
+	await options.evidenceGateway.captureOutput({
+		id: toolCallId,
+		command: `edit ${path}`,
+		subject: permissionDecision?.subject || path,
+		allowed: permissionDecision?.allowed ?? { level: "ask" },
+		...(permissionDecision?.writeScope ? { writeScope: permissionDecision.writeScope } : {}),
+		actualWritePaths: [permissionDecision?.subject || path],
+		stdout: `Replaced ${replacements} occurrence(s) in ${path}`,
+		exitCode: 0,
+	});
 }
 
 function countOccurrences(content: string, search: string): number {

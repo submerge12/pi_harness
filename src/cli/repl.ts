@@ -64,6 +64,14 @@ function formatModel(model: unknown): string {
 	return provider ? `${provider}/${id}` : id;
 }
 
+function lifecycleClarification(result: unknown): string | undefined {
+	if (!result || typeof result !== "object") return undefined;
+	const record = result as Record<string, unknown>;
+	return record.entryStage === "intake" && typeof record.clarification === "string"
+		? record.clarification
+		: undefined;
+}
+
 function parseModelReference(args: string[]): ReplModelReference | undefined {
 	const firstArg = args[0];
 	if (!firstArg) return undefined;
@@ -194,7 +202,9 @@ export async function runRepl(harness: ReplHarness, options: ReplOptions = {}): 
 				} else {
 					sigintController.setTurnActive(true);
 					try {
-						await harness.prompt(line);
+						const result = await harness.prompt(line);
+						const clarification = lifecycleClarification(result);
+						if (clarification) output.write(`${clarification}\n`);
 					} finally {
 						sigintController.setTurnActive(false);
 					}

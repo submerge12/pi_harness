@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 import process, { argv as processArgv, stderr, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
+import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
 import { getProviders, type KnownProvider } from "@earendil-works/pi-ai";
 import { createAgent } from "../agents/create-agent.ts";
+import type { AgentProfile } from "../agents/profile.ts";
 import { registerBuiltInProfiles } from "../agents/profiles/index.ts";
 import { getProfile, listProfiles } from "../agents/registry.ts";
 import { loadConfigLayerOverrides } from "../config-file.ts";
-import type { HarnessConfig } from "../config.ts";
+import { resolveHarnessConfig, type HarnessConfig } from "../config.ts";
 import { createGenericHarness, createGenericHarnessFromSession, type GenericHarness } from "../harness.ts";
 import { CostTracker } from "../observability/cost-tracker.ts";
 import type { HarnessEvent } from "../observability/types.ts";
-import { listSessions, openJsonlSession } from "../session/factory.ts";
+import { createJsonlSession, listSessions, openJsonlSession } from "../session/factory.ts";
+import { Scheduler, type SchedulerConfig } from "../scheduler/index.ts";
 import { createPermissionStore } from "../tools/permission-store.ts";
 import { createStoredPermissionCallback, promptForPermission } from "./permission-prompt.ts";
 import { CliRenderer } from "./renderer.ts";
@@ -25,6 +28,7 @@ export interface CliOptions {
 	continueSession?: boolean;
 	listSessions?: boolean;
 	resume?: string;
+	scheduler?: boolean;
 }
 
 export interface ParsedCliArgs {
@@ -35,6 +39,10 @@ export interface ParsedCliArgs {
 }
 
 export type CliHarnessFactory = (options: CliOptions) => Promise<ReplHarness> | ReplHarness;
+
+type HarnessConfigWithScheduler = HarnessConfig & {
+	scheduler?: SchedulerConfig;
+};
 
 function resolveProvider(provider: string | undefined): KnownProvider | undefined {
 	if (!provider) return undefined;
@@ -104,6 +112,10 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
 			options.listSessions = true;
 			continue;
 		}
+		if (arg === "--scheduler") {
+			options.scheduler = true;
+			continue;
+		}
 		if (arg.startsWith("--resume=")) {
 			options.resume = arg.slice("--resume=".length);
 			continue;
@@ -169,7 +181,7 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
 
 export function formatCliHelp(): string {
 	return [
-		"usage: pi-harness [--agent name] [--cwd path] [--provider name] [--model id] [--api-key key] [--continue|--resume id|--list-sessions] [prompt...]",
+		"usage: pi-harness [--agent name] [--scheduler] [--cwd path] [--provider name] [--model id] [--api-key key] [--continue|--resume id|--list-sessions] [prompt...]",
 		"       pi-harness agents",
 		"",
 		"commands: /model /cost /cache /sessions /thinking /compact /quit",
@@ -193,7 +205,7 @@ function toReplHarness(
 		getModel: () => harness.getModel(),
 		getThinkingLevel: () => harness.getThinkingLevel(),
 		listSessions: listSessionsForCwd,
-		prompt: async (text: string) => await harness.prompt(text),
+		prompt: async (text: string) => await harness.runRequest({ rawRequest: text }),
 		dispose: async () => await harness.dispose(),
 		setModel: async (modelReference) => {
 			const provider = resolveProvider(modelReference.provider ?? defaultProvider ?? harness.getModel()?.provider);
@@ -218,24 +230,67 @@ export async function createCliHarness(options: CliOptions): Promise<ReplHarness
 	const sessionId = options.resume ?? (options.continueSession ? (await sessionsForCwd())[0]?.id : undefined);
 	if (options.continueSession && !sessionId) throw new Error("no sessions to continue");
 	const harness = sessionId
-		? await createHarnessFromSession(configWithPermission, sessionId)
-		: await createConfiguredHarness(configWithPermission);
+		? await createHarnessFromSession(configWithPermission, sessionId, options.scheduler)
+		: await createConfiguredHarness(configWithPermission, options.scheduler);
 	return toReplHarness(harness, options.provider ?? config.provider, sessionsForCwd);
 }
 
-async function createConfiguredHarness(config: HarnessConfig): Promise<GenericHarness> {
-	if (!config.agent) return await createGenericHarness(config);
-	registerBuiltInProfiles();
-	return await createAgent(getProfile(config.agent), config);
+function schedulerConfigFrom(config: HarnessConfig, profile: AgentProfile): SchedulerConfig {
+	const configured = (config as HarnessConfigWithScheduler).scheduler;
+	return {
+		...configured,
+		tasks: [...(configured?.tasks ?? []), ...(profile.scheduledTasks ?? [])],
+	};
 }
 
-async function createHarnessFromSession(config: HarnessConfig, sessionId: string): Promise<GenericHarness> {
+function installScheduler(
+	harness: GenericHarness,
+	config: HarnessConfig,
+	profile: AgentProfile,
+	env: ExecutionEnv,
+	enabled: boolean | undefined,
+): void {
+	if (!enabled) return;
+	const schedulerConfig = schedulerConfigFrom(config, profile);
+	if ((schedulerConfig.tasks?.length ?? 0) === 0) return;
+	const scheduler = new Scheduler({
+		config: schedulerConfig,
+		context: { env, config: harness.getConfig() },
+	});
+	scheduler.start();
+	harness.addDisposer(() => {
+		scheduler.stop();
+	});
+}
+
+async function createConfiguredHarness(config: HarnessConfig, schedulerEnabled?: boolean): Promise<GenericHarness> {
+	if (!config.agent) return await createGenericHarness(config);
+	registerBuiltInProfiles();
+	const profile = getProfile(config.agent);
+	const resolvedConfig = resolveHarnessConfig(config);
+	const { env, session } = await createJsonlSession({
+		cwd: resolvedConfig.cwd,
+		sessionsRoot: resolvedConfig.sessionsRoot,
+	});
+	const harness = await createAgent(profile, { ...config, env, session });
+	installScheduler(harness, config, profile, env, schedulerEnabled);
+	return harness;
+}
+
+async function createHarnessFromSession(
+	config: HarnessConfig,
+	sessionId: string,
+	schedulerEnabled?: boolean,
+): Promise<GenericHarness> {
 	const cwd = config.cwd ?? process.cwd();
 	const sessionsRoot = config.sessionsRoot ?? ".pi-harness/sessions";
 	const { env, session } = await openJsonlSession({ cwd, sessionsRoot, sessionId });
 	if (!config.agent) return await createGenericHarnessFromSession(config, env, session);
 	registerBuiltInProfiles();
-	return await createAgent(getProfile(config.agent), { ...config, env, session });
+	const profile = getProfile(config.agent);
+	const harness = await createAgent(profile, { ...config, env, session });
+	installScheduler(harness, config, profile, env, schedulerEnabled);
+	return harness;
 }
 
 export interface ReplSessionInfo {
@@ -270,10 +325,20 @@ async function runOneShot(harness: ReplHarness, prompt: string): Promise<void> {
 		renderer.handleEvent(event);
 	});
 	try {
-		await harness.prompt(prompt);
+		const result = await harness.prompt(prompt);
+		const clarification = lifecycleClarification(result);
+		if (clarification) stdout.write(`${clarification}\n`);
 	} finally {
 		unsubscribe?.();
 	}
+}
+
+function lifecycleClarification(result: unknown): string | undefined {
+	if (!result || typeof result !== "object") return undefined;
+	const record = result as Record<string, unknown>;
+	return record.entryStage === "intake" && typeof record.clarification === "string"
+		? record.clarification
+		: undefined;
 }
 
 export async function runCli(

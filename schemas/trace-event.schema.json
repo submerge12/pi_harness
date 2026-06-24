@@ -1,0 +1,59 @@
+{
+	"type": "object",
+	"required": [
+		"runId",
+		"seq",
+		"type",
+		"at"
+	],
+	"properties": {
+		"runId": {
+			"type": "string"
+		},
+		"seq": {
+			"type": "integer",
+			"minimum": 0
+		},
+		"type": {
+			"anyOf": [
+				{
+					"type": "string",
+					"const": "stage"
+				},
+				{
+					"type": "string",
+					"const": "transition"
+				},
+				{
+					"type": "string",
+					"const": "worker-attempt"
+				},
+				{
+					"type": "string",
+					"const": "review-verdict"
+				},
+				{
+					"type": "string",
+					"const": "rewind"
+				},
+				{
+					"type": "string",
+					"const": "completion-gate"
+				},
+				{
+					"type": "string",
+					"const": "human-gate"
+				},
+				{
+					"type": "string",
+					"const": "human-decision"
+				}
+			]
+		},
+		"at": {
+			"type": "number"
+		},
+		"data": {}
+	},
+	"additionalProperties": false
+}

@@ -1,5 +1,9 @@
 import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
+import type { CheckpointStore } from "../../checkpoint/index.ts";
+import type { EvidenceGateway } from "../../evidence/index.ts";
+import type { CommandRule } from "../../policy/index.ts";
 import { ToolRegistry } from "../registry.ts";
+import type { ToolPermissionDecisionLookup } from "../types.ts";
 import { createBashTool } from "./bash.ts";
 import { createEditTool } from "./edit.ts";
 import { createFetchTool } from "./fetch.ts";
@@ -17,6 +21,10 @@ export interface DefaultToolsetOptions {
 	bashTimeoutSeconds?: number;
 	fetch?: FetchImplementation;
 	fetchMaxBytes?: number;
+	evidenceGateway?: EvidenceGateway;
+	getPermissionDecision?: ToolPermissionDecisionLookup;
+	checkpoint?: CheckpointStore;
+	commandRules?: readonly CommandRule[];
 }
 
 export function createDefaultToolset(options: DefaultToolsetOptions): ToolRegistry {
@@ -31,7 +39,15 @@ export function createDefaultToolset(options: DefaultToolsetOptions): ToolRegist
 		tool: createBashTool({ ...options, defaultTimeoutSeconds: options.bashTimeoutSeconds }),
 		accessLevel: "destructive",
 	});
-	registry.register({ tool: createFetchTool({ fetch: options.fetch, maxBytes: options.fetchMaxBytes }), accessLevel: "network" });
+	registry.register({
+		tool: createFetchTool({
+			fetch: options.fetch,
+			maxBytes: options.fetchMaxBytes,
+			evidenceGateway: options.evidenceGateway,
+			getPermissionDecision: options.getPermissionDecision,
+		}),
+		accessLevel: "network",
+	});
 	return registry;
 }
 
@@ -43,4 +59,5 @@ export { createGlobTool } from "./glob.ts";
 export { createGrepTool } from "./grep.ts";
 export { createLsTool } from "./ls.ts";
 export { createReadTool } from "./read.ts";
+export { createSpawnAgentTool } from "./spawn-agent.ts";
 export { createWriteTool } from "./write.ts";

@@ -1,6 +1,7 @@
 import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
+import type { EvidenceGateway } from "../../../evidence/index.ts";
 import type { AgentProfile } from "../../profile.ts";
-import type { ToolRegistration } from "../../../tools/types.ts";
+import type { ToolPermissionDecisionLookup, ToolRegistration } from "../../../tools/types.ts";
 import {
 	createFetchTool,
 	createGlobTool,
@@ -17,11 +18,21 @@ export interface ResearchToolRegistrationOptions {
 	maxOutputChars?: number;
 	fetch?: FetchImplementation;
 	fetchMaxBytes?: number;
+	evidenceGateway?: EvidenceGateway;
+	getPermissionDecision?: ToolPermissionDecisionLookup;
 }
 
 export function createResearchToolRegistrations(options: ResearchToolRegistrationOptions): ToolRegistration[] {
 	return [
-		{ tool: createFetchTool({ fetch: options.fetch, maxBytes: options.fetchMaxBytes }), accessLevel: "network" },
+		{
+			tool: createFetchTool({
+				fetch: options.fetch,
+				maxBytes: options.fetchMaxBytes,
+				evidenceGateway: options.evidenceGateway,
+				getPermissionDecision: options.getPermissionDecision,
+			}),
+			accessLevel: "network",
+		},
 		{ tool: createReadTool(options), accessLevel: "read-only" },
 		{ tool: createLsTool(options), accessLevel: "read-only" },
 		{ tool: createGrepTool(options), accessLevel: "read-only" },
@@ -34,12 +45,14 @@ export const researchProfile = {
 	description: "Source-first research agent with citations and no write defaults.",
 	systemPrompt: researchSystemPrompt,
 	tools: [
-		({ env, config }) =>
+		({ env, config, evidenceGateway, getPermissionDecision }) =>
 			createResearchToolRegistrations({
 				env,
 				roots: config.sandbox?.roots,
 				maxOutputChars: config.sandbox?.maxOutputChars,
 				fetchMaxBytes: config.sandbox?.fetchMaxBytes,
+				evidenceGateway,
+				getPermissionDecision,
 			}),
 	],
 	policy: {

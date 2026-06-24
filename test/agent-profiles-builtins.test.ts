@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { codingProfile, createCodingToolRegistrations } from "../src/agents/profiles/coding/profile.ts";
 import { researchProfile, createResearchToolRegistrations } from "../src/agents/profiles/research/profile.ts";
 import { dataAnalysisProfile, createDataAnalysisToolRegistrations } from "../src/agents/profiles/data-analysis/profile.ts";
+import { resolveHarnessConfig } from "../src/config.ts";
 
 function expectPolicyDefaults(profile: { policy: { defaults: Record<string, string> } }, defaults: Record<string, string>): void {
 	expect(profile.policy.defaults).toEqual(defaults);
@@ -25,13 +26,14 @@ describe("built-in agent profiles", () => {
 	});
 
 	it("registers the coding built-in tools with the expected access levels", () => {
-		expect(createCodingToolRegistrations({ env: fakeEnv() }).map((registration) => [registration.tool.name, registration.accessLevel])).toEqual([
+		expect(createCodingToolRegistrations({ env: fakeEnv(), config: resolveHarnessConfig() }).map((registration) => [registration.tool.name, registration.accessLevel])).toEqual([
 			["read", "read-only"],
 			["ls", "read-only"],
 			["grep", "read-only"],
 			["glob", "read-only"],
 			["write", "write"],
 			["edit", "write"],
+			["spawn_agent", "destructive"],
 			["bash", "destructive"],
 			["fetch", "network"],
 		]);

@@ -1,0 +1,74 @@
+{
+	"type": "object",
+	"required": [
+		"id",
+		"scope",
+		"subject",
+		"predicate",
+		"object",
+		"validFrom",
+		"observedAt",
+		"lastConfirmedAt",
+		"source",
+		"trust",
+		"sensitivity"
+	],
+	"properties": {
+		"id": {
+			"type": "string"
+		},
+		"scope": {
+			"type": "string"
+		},
+		"category": {
+			"type": "string"
+		},
+		"subject": {
+			"type": "string"
+		},
+		"predicate": {
+			"type": "string"
+		},
+		"object": {
+			"type": "string"
+		},
+		"validFrom": {
+			"type": "number"
+		},
+		"validTo": {
+			"type": "number"
+		},
+		"observedAt": {
+			"type": "number"
+		},
+		"lastConfirmedAt": {
+			"type": "number"
+		},
+		"source": {
+			"type": "string"
+		},
+		"trust": {
+			"anyOf": [
+				{
+					"type": "string",
+					"const": "user_confirmed"
+				},
+				{
+					"type": "string",
+					"const": "tool_evidenced"
+				},
+				{
+					"type": "string",
+					"const": "model_inferred"
+				}
+			]
+		},
+		"sensitivity": {
+			"type": "string"
+		},
+		"expiresAt": {
+			"type": "number"
+		}
+	},
+	"additionalProperties": false
+}

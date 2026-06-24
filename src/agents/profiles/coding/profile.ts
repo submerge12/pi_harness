@@ -1,6 +1,9 @@
 import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
+import type { CheckpointStore } from "../../../checkpoint/index.ts";
+import type { EvidenceGateway } from "../../../evidence/index.ts";
+import type { CommandRule } from "../../../policy/index.ts";
 import type { AgentProfile } from "../../profile.ts";
-import type { ToolRegistration } from "../../../tools/types.ts";
+import type { ToolPermissionDecisionLookup, ToolRegistration } from "../../../tools/types.ts";
 import {
 	createBashTool,
 	createEditTool,
@@ -9,9 +12,12 @@ import {
 	createGrepTool,
 	createLsTool,
 	createReadTool,
+	createSpawnAgentTool,
 	createWriteTool,
 	type FetchImplementation,
 } from "../../../tools/builtin/index.ts";
+import type { ActiveWorktreeLeaseProvider } from "../../../execution/index.ts";
+import type { ResolvedHarnessConfig } from "../../../config.ts";
 import { codingSystemPrompt } from "./prompt.ts";
 import { fixTestsSkill } from "./skills/fix-tests.ts";
 import { reviewSkill } from "./skills/review.ts";
@@ -23,6 +29,12 @@ export interface CodingToolRegistrationOptions {
 	bashTimeoutSeconds?: number;
 	fetch?: FetchImplementation;
 	fetchMaxBytes?: number;
+	evidenceGateway?: EvidenceGateway;
+	getPermissionDecision?: ToolPermissionDecisionLookup;
+	getActiveLease?: ActiveWorktreeLeaseProvider["getActiveLease"];
+	checkpoint?: CheckpointStore;
+	commandRules?: readonly CommandRule[];
+	config: ResolvedHarnessConfig;
 }
 
 export function createCodingToolRegistrations(options: CodingToolRegistrationOptions): ToolRegistration[] {
@@ -34,10 +46,26 @@ export function createCodingToolRegistrations(options: CodingToolRegistrationOpt
 		{ tool: createWriteTool(options), accessLevel: "write" },
 		{ tool: createEditTool(options), accessLevel: "write" },
 		{
+			tool: createSpawnAgentTool({
+				config: options.config,
+				evidenceGateway: options.evidenceGateway,
+				getActiveLease: options.getActiveLease,
+			}),
+			accessLevel: "destructive",
+		},
+		{
 			tool: createBashTool({ ...options, defaultTimeoutSeconds: options.bashTimeoutSeconds }),
 			accessLevel: "destructive",
 		},
-		{ tool: createFetchTool({ fetch: options.fetch, maxBytes: options.fetchMaxBytes }), accessLevel: "network" },
+		{
+			tool: createFetchTool({
+				fetch: options.fetch,
+				maxBytes: options.fetchMaxBytes,
+				evidenceGateway: options.evidenceGateway,
+				getPermissionDecision: options.getPermissionDecision,
+			}),
+			accessLevel: "network",
+		},
 	];
 }
 
@@ -46,13 +74,19 @@ export const codingProfile = {
 	description: "Software engineering agent for code changes, tests, and review loops.",
 	systemPrompt: codingSystemPrompt,
 	tools: [
-		({ env, config }) =>
+		({ env, config, evidenceGateway, getPermissionDecision, getActiveLease, checkpoint }) =>
 			createCodingToolRegistrations({
 				env,
+				config,
 				roots: config.sandbox?.roots,
 				maxOutputChars: config.sandbox?.maxOutputChars,
 				bashTimeoutSeconds: config.sandbox?.bashTimeoutSeconds,
 				fetchMaxBytes: config.sandbox?.fetchMaxBytes,
+				evidenceGateway,
+				getPermissionDecision,
+				getActiveLease,
+				checkpoint,
+				commandRules: config.commandRules,
 			}),
 	],
 	policy: {

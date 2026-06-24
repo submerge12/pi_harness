@@ -8,6 +8,8 @@ import { formatAgentsList, parseCliArgs, resolveCliHarnessConfig, runCli } from 
 import { loadConfigLayerOverrides } from "../src/config-file.ts";
 import { createAgent } from "../src/agents/create-agent.ts";
 import { mergeAgentProfileConfig } from "../src/agents/merge.ts";
+import { GenericHarness } from "../src/harness.ts";
+import type { EvidenceGateway } from "../src/evidence/index.ts";
 import {
 	clearProfilesForTests,
 	getProfile,
@@ -83,6 +85,42 @@ describe("agent profile merging", () => {
 			},
 			tools: { profile_tool: "deny" },
 		});
+	});
+
+	it("keeps rules-only profile policies when merging profile config", () => {
+		const result = mergeAgentProfileConfig(
+			createProfile({
+				policy: {
+					rules: [{ id: "deny-secrets", toolName: "write", subject: "secrets/**", level: "deny" }],
+				} as unknown as AgentProfile["policy"],
+			}),
+		);
+
+		expect(result.policy).toEqual({
+			rules: [{ id: "deny-secrets", toolName: "write", subject: "secrets/**", level: "deny" }],
+		});
+	});
+
+	it("returns scoped policy rules from GenericHarness.getConfig", () => {
+		const harness = new GenericHarness({
+			config: {
+				policy: {
+					rules: [{ id: "deny-secrets", toolName: "write", subject: "secrets/**", level: "deny" }],
+				},
+			},
+			inner: {
+				prompt: async () => {
+					throw new Error("unused");
+				},
+				subscribe: () => () => undefined,
+				on: () => () => undefined,
+				abort: async () => ({ aborted: false, clearedSteer: [], clearedFollowUp: [] }),
+			},
+		});
+
+		expect(harness.getConfig().policy.rules).toEqual([
+			{ id: "deny-secrets", toolName: "write", subject: "secrets/**", level: "deny" },
+		]);
 	});
 
 	it("applies per-agent config overrides before CLI flags", async () => {
@@ -224,6 +262,44 @@ describe("createAgent", () => {
 
 		expect(toolNames).toEqual(["static_tool", "factory_tool"]);
 	});
+
+	it("passes runtime evidence and lease wiring into profile tool factories", async () => {
+		const evidenceGateway = {
+			captureCommand: async () => {
+				throw new Error("unused");
+			},
+			captureOutput: async () => {
+				throw new Error("unused");
+			},
+		} as unknown as EvidenceGateway;
+		const getActiveLease = () => ({ writeScope: ["src/profile"] });
+		const observed: Record<string, unknown> = {};
+		const profile = createProfile({
+			tools: [
+				(context) => {
+					observed.evidenceGateway = context.evidenceGateway;
+					observed.getPermissionDecisionType = typeof context.getPermissionDecision;
+					observed.getActiveLease = context.getActiveLease;
+					return createToolRegistration("profile_tool");
+				},
+			],
+		});
+
+		const harness = await createAgent(profile, {
+			cwd: await mkdtemp(join(tmpdir(), "pi-harness-agent-runtime-")),
+			apiKey: "test-key",
+			useDefaultTools: false,
+			evidenceGateway,
+			getActiveLease,
+		});
+		await harness.dispose();
+
+		expect(observed).toEqual({
+			evidenceGateway,
+			getPermissionDecisionType: "function",
+			getActiveLease,
+		});
+	});
 });
 
 describe("agent CLI", () => {
@@ -269,5 +345,31 @@ describe("agent CLI", () => {
 		);
 
 		expect(calls).toEqual(["prompt:hello", "dispose"]);
+	});
+
+	it("prints lifecycle clarification results for one-shot prompts", async () => {
+		const originalWrite = process.stdout.write;
+		const output: string[] = [];
+		try {
+			process.stdout.write = ((chunk: string | Uint8Array) => {
+				output.push(chunk.toString());
+				return true;
+			}) as typeof process.stdout.write;
+
+			await runCli(
+				() => ({
+					prompt: async () => ({
+						entryStage: "intake",
+						clarification: "Please clarify the missing constraints: write-scope",
+					}),
+					dispose: async () => undefined,
+				}),
+				["hello"],
+			);
+		} finally {
+			process.stdout.write = originalWrite;
+		}
+
+		expect(output.join("")).toContain("Please clarify the missing constraints: write-scope");
 	});
 });

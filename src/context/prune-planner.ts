@@ -6,6 +6,7 @@ import {
 	detectPruningCandidates,
 	type PruneCandidate,
 } from "./relevance.ts";
+import { createTombstoneAnchor } from "./lifecycle.ts";
 
 export const DEFAULT_PRUNE_EXPECTED_FUTURE_TURNS = 3;
 
@@ -89,9 +90,7 @@ export function applyPrunePlan(messages: AgentMessage[], plan: PrunePlan): Agent
 	for (let index = 0; index < messages.length; index++) {
 		const span = sorted[spanIndex];
 		if (span && index === span.start) {
-			if (span.action === "tombstone_tool_result") {
-				result.push(withTextContent(messages[index], span.replacementText ?? "[result pruned]"));
-			}
+			result.push(withTextContent(messages[index], span.replacementText ?? createSpanTombstoneText(span)));
 			index = span.end;
 			spanIndex++;
 			continue;
@@ -130,6 +129,15 @@ function estimateExpectedFutureTurns(messages: readonly AgentMessage[]): number 
 
 function signatureForSpans(spans: readonly PruneCandidate[]): string {
 	return spans.map((span) => `${span.action}:${span.reason}:${span.start}:${span.end}`).join("|");
+}
+
+function createSpanTombstoneText(span: PruneCandidate): string {
+	return createTombstoneAnchor({
+		removedSummary: `[result pruned: ${span.reason} from turns ${span.startTurnIndex}-${span.endTurnIndex}]`,
+		anchorId: `context-prune:${span.reason}:${span.start}-${span.end}`,
+		retrievableFrom: "session custom prune entry",
+		reason: span.reason,
+	}).text;
 }
 
 function withTextContent(message: AgentMessage, text: string): AgentMessage {

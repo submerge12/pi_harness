@@ -2,8 +2,12 @@ import type { ExecutionEnv, PromptTemplate, Skill, ThinkingLevel } from "@earend
 import type { KnownProvider } from "@earendil-works/pi-ai";
 import type { ResolvedHarnessConfig } from "../config.ts";
 import type { TokenBudgetRatios } from "../context/token-budget.ts";
+import type { CheckpointStore } from "../checkpoint/index.ts";
+import type { EvidenceGateway } from "../evidence/index.ts";
+import type { ActiveWorktreeLeaseProvider } from "../execution/index.ts";
 import type { GenericHarness } from "../harness.ts";
-import type { PermissionPolicy, ToolRegistration } from "../tools/types.ts";
+import type { ScheduledTaskDefinition } from "../scheduler/types.ts";
+import type { PermissionPolicy, ToolPermissionDecisionLookup, ToolRegistration } from "../tools/types.ts";
 
 export interface AgentModelDefault {
 	provider: KnownProvider;
@@ -18,6 +22,10 @@ export interface AgentContextDefaults {
 export interface AgentToolFactoryContext {
 	env: ExecutionEnv;
 	config: ResolvedHarnessConfig;
+	evidenceGateway?: EvidenceGateway;
+	getPermissionDecision?: ToolPermissionDecisionLookup;
+	getActiveLease?: ActiveWorktreeLeaseProvider["getActiveLease"];
+	checkpoint?: CheckpointStore;
 }
 
 export type AgentToolRegistrationFactory = (
@@ -43,5 +51,7 @@ export interface AgentProfile {
 	context?: AgentContextDefaults;
 	skills?: readonly Skill[];
 	templates?: readonly PromptTemplate[];
+	scheduledTasks?: readonly ScheduledTaskDefinition[];
+	proactiveCheck?: (context: AgentToolFactoryContext) => Promise<string>;
 	install?: AgentProfileInstall;
 }

@@ -1,0 +1,35 @@
+{
+	"type": "object",
+	"required": [
+		"sourceDomain",
+		"targetDomain",
+		"artifactRefs"
+	],
+	"properties": {
+		"sourceDomain": {
+			"type": "string"
+		},
+		"targetDomain": {
+			"type": "string"
+		},
+		"artifactRefs": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"decisions": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"unresolvedQuestions": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		}
+	},
+	"additionalProperties": false
+}

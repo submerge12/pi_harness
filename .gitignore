@@ -1,10 +1,23 @@
+# Dependencies and build outputs
 node_modules/
 dist/
+
+# Local runtime/workspace artifacts
 .tmp/
 .tmp-observability-test/
 .pi-harness/
 .ai/checkpoints/
+.evidence-local/
 
+# Local documentation/planning notes
+docs/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Logs and OS files
 *.log
 *.out
 *.err

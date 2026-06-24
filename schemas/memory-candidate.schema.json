@@ -1,0 +1,40 @@
+{
+	"type": "object",
+	"required": [
+		"subject",
+		"predicate",
+		"object",
+		"trust"
+	],
+	"properties": {
+		"subject": {
+			"type": "string"
+		},
+		"predicate": {
+			"type": "string"
+		},
+		"object": {
+			"type": "string"
+		},
+		"trust": {
+			"anyOf": [
+				{
+					"type": "string",
+					"const": "user_confirmed"
+				},
+				{
+					"type": "string",
+					"const": "tool_evidenced"
+				},
+				{
+					"type": "string",
+					"const": "model_inferred"
+				}
+			]
+		},
+		"source": {
+			"type": "string"
+		}
+	},
+	"additionalProperties": false
+}

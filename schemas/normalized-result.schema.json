@@ -1,0 +1,80 @@
+{
+	"type": "object",
+	"required": [
+		"status",
+		"testResults",
+		"evidenceRefs",
+		"usage",
+		"message"
+	],
+	"properties": {
+		"status": {
+			"anyOf": [
+				{
+					"type": "string",
+					"const": "completed"
+				},
+				{
+					"type": "string",
+					"const": "failed"
+				},
+				{
+					"type": "string",
+					"const": "blocked"
+				}
+			]
+		},
+		"diffRef": {
+			"type": "string"
+		},
+		"testResults": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"required": [
+					"name",
+					"passed"
+				],
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"passed": {
+						"type": "boolean"
+					}
+				},
+				"additionalProperties": false
+			}
+		},
+		"evidenceRefs": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"usage": {
+			"type": "object",
+			"required": [
+				"inputTokens",
+				"outputTokens",
+				"costUsd"
+			],
+			"properties": {
+				"inputTokens": {
+					"type": "number"
+				},
+				"outputTokens": {
+					"type": "number"
+				},
+				"costUsd": {
+					"type": "number"
+				}
+			},
+			"additionalProperties": false
+		},
+		"message": {
+			"type": "string"
+		}
+	},
+	"additionalProperties": false
+}

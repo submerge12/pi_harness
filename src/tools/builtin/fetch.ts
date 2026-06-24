@@ -1,6 +1,9 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { Static } from "typebox";
+import type { EvidenceGateway } from "../../evidence/index.ts";
+import { getEvidenceCapturedOutput } from "../../evidence/index.ts";
+import type { ToolPermissionDecisionLookup } from "../types.ts";
 
 const DEFAULT_MAX_BYTES = 1_000_000;
 
@@ -14,6 +17,8 @@ export type FetchImplementation = (url: string, init: { method: "GET"; signal?: 
 export interface FetchToolOptions {
 	fetch?: FetchImplementation;
 	maxBytes?: number;
+	evidenceGateway?: EvidenceGateway;
+	getPermissionDecision?: ToolPermissionDecisionLookup;
 }
 
 export interface FetchToolDetails {
@@ -43,12 +48,42 @@ export function createFetchTool(options: FetchToolOptions = {}): AgentTool<typeo
 			const fetchImpl = options.fetch ?? globalThis.fetch;
 			const maxBytes = params.maxBytes ?? options.maxBytes ?? DEFAULT_MAX_BYTES;
 			const response = await fetchImpl(url.toString(), { method: "GET", signal });
-			const body = await readResponseText(response, maxBytes);
+			const body = await captureFetchEvidence(options, toolCallId, url.toString(), await readResponseText(response, maxBytes), response.status);
 			return {
 				content: [{ type: "text", text: formatResponse(response, body, maxBytes) }],
 				details: { toolCallId, url: url.toString(), status: response.status, truncated: body.truncated, bytesRead: body.bytesRead },
 			};
 		},
+	};
+}
+
+async function captureFetchEvidence(
+	options: FetchToolOptions,
+	toolCallId: string,
+	url: string,
+	body: CappedText,
+	status: number,
+): Promise<CappedText> {
+	if (!options.evidenceGateway) return body;
+
+	const permissionDecision = options.getPermissionDecision?.(toolCallId);
+	const entry = await options.evidenceGateway.captureOutput({
+		id: toolCallId,
+		command: `fetch ${url}`,
+		subject: permissionDecision?.subject ?? url,
+		allowed: permissionDecision?.allowed ?? { level: "ask" },
+		...(permissionDecision?.writeScope ? { writeScope: permissionDecision.writeScope } : {}),
+		actualWritePaths: [],
+		stdout: body.text,
+		exitCode: status,
+	});
+	const captured = getEvidenceCapturedOutput(entry);
+	if (!captured) throw new Error(`Evidence output unavailable for ${toolCallId}`);
+
+	return {
+		...body,
+		text: captured.stdout,
+		bytesRead: new TextEncoder().encode(captured.stdout).byteLength,
 	};
 }
 

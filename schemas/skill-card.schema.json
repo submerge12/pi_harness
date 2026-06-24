@@ -1,0 +1,80 @@
+{
+	"type": "object",
+	"required": [
+		"name",
+		"responsibility",
+		"whenToUse",
+		"effects",
+		"adjacentFalseTriggers",
+		"positiveExamples",
+		"negativeExamples",
+		"inputs",
+		"outputs",
+		"tools",
+		"constraints",
+		"handoffContract"
+	],
+	"properties": {
+		"name": {
+			"type": "string"
+		},
+		"responsibility": {
+			"type": "string"
+		},
+		"whenToUse": {
+			"type": "string"
+		},
+		"effects": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"adjacentFalseTriggers": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"positiveExamples": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"negativeExamples": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"inputs": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"outputs": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"tools": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"constraints": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"handoffContract": {
+			"type": "string"
+		}
+	},
+	"additionalProperties": false
+}

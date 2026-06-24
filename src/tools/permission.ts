@@ -1,28 +1,37 @@
+import { decide } from "../policy/decide.ts";
+import { resolveSubjectDetails } from "../policy/subject.ts";
 import type {
 	HarnessToolCallEvent,
 	HarnessToolCallSubscriber,
 	PermissionGateOptions,
-	PermissionLevel,
 	PermissionPolicy,
-	StoredToolRegistration,
 	ToolCallPermissionResult,
+	ToolPermissionDecisionLookup,
+	ToolPermissionDecisionRecord,
 } from "./types.ts";
 import type { ToolRegistry } from "./registry.ts";
 
-const permissionRank: Record<PermissionLevel, number> = {
-	allow: 0,
-	ask: 1,
-	deny: 2,
-};
+export class ToolPermissionDecisionStore {
+	private readonly decisions = new Map<string, ToolPermissionDecisionRecord>();
 
-function stricterPermission(first: PermissionLevel, second: PermissionLevel): PermissionLevel {
-	return permissionRank[first] >= permissionRank[second] ? first : second;
-}
+	record(decision: ToolPermissionDecisionRecord): void {
+		this.decisions.set(decision.toolCallId, {
+			...decision,
+			allowed: { ...decision.allowed },
+			writeScope: decision.writeScope ? [...decision.writeScope] : undefined,
+		});
+	}
 
-function resolvePermission(registration: StoredToolRegistration, policy: PermissionPolicy): PermissionLevel {
-	const configuredLevel = policy.tools?.[registration.tool.name] ?? policy.defaults[registration.accessLevel];
-	const overrideLevel = registration.permissionOverride;
-	return overrideLevel ? stricterPermission(configuredLevel, overrideLevel) : configuredLevel;
+	lookup: ToolPermissionDecisionLookup = (toolCallId) => {
+		const decision = this.decisions.get(toolCallId);
+		return decision
+			? {
+					...decision,
+					allowed: { ...decision.allowed },
+					writeScope: decision.writeScope ? [...decision.writeScope] : undefined,
+				}
+			: undefined;
+	};
 }
 
 export class PermissionGate {
@@ -35,6 +44,7 @@ export class PermissionGate {
 		this.policy = {
 			defaults: { ...policy.defaults },
 			tools: policy.tools ? { ...policy.tools } : undefined,
+			rules: policy.rules ? policy.rules.map((rule) => ({ ...rule })) : undefined,
 		};
 		this.options = { ...options };
 	}
@@ -46,12 +56,45 @@ export class PermissionGate {
 	async handleToolCall(event: HarnessToolCallEvent): Promise<ToolCallPermissionResult | undefined> {
 		const registration = this.registry.getRegistration(event.toolName);
 		if (!registration) return { block: true, reason: `Unknown tool ${event.toolName}` };
+		const activeToolNames = this.options.getActiveToolNames?.();
+		if (activeToolNames && !activeToolNames.includes(event.toolName)) {
+			return { block: true, reason: `Tool ${event.toolName} is not allowed for this task` };
+		}
 
-		const permission = resolvePermission(registration, this.policy);
-		if (permission === "deny") return { block: true, reason: `Tool ${event.toolName} is denied by policy` };
-		if (permission === "allow") return undefined;
+		const resolvedSubject = resolveSubjectDetails(event.input);
+		const subject = resolvedSubject.subject;
+		const activeLease = this.options.getActiveLease?.();
+		const decision = decide(this.policy, event.toolName, subject, {
+			accessLevel: registration.accessLevel,
+			permissionOverride: registration.permissionOverride,
+			subjectIsPath: resolvedSubject.isPath,
+			writeScope: activeLease?.writeScope,
+		});
+		const decisionRecord: ToolPermissionDecisionRecord = {
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			subject,
+			allowed: { ...decision },
+			writeScope: activeLease?.writeScope ? [...activeLease.writeScope] : undefined,
+		};
+		this.options.onDecision?.(decisionRecord);
 
-		const approved = await this.options.askCallback?.(event.toolName, { ...event.input });
+		if (decision.level === "deny") {
+			return {
+				block: true,
+				reason:
+					decision.ruleId === "write-scope"
+						? `Tool ${event.toolName} is denied by write scope`
+						: `Tool ${event.toolName} is denied by policy`,
+			};
+		}
+		if (decision.level === "allow") return undefined;
+
+		const approved = await this.options.askCallback?.(
+			event.toolName,
+			{ ...event.input },
+			subject ? { subject } : undefined,
+		);
 		return approved ? undefined : { block: true, reason: `Tool ${event.toolName} requires approval` };
 	}
 }

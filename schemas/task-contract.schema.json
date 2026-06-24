@@ -1,0 +1,91 @@
+{
+	"type": "object",
+	"required": [
+		"id",
+		"goal",
+		"rawRequest",
+		"hardConstraints",
+		"assignedSkill",
+		"writeScope",
+		"gateTier"
+	],
+	"properties": {
+		"id": {
+			"type": "string"
+		},
+		"goal": {
+			"type": "string"
+		},
+		"rawRequest": {
+			"type": "string"
+		},
+		"hardConstraints": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"required": [
+					"kind",
+					"value"
+				],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"kind": {
+						"type": "string"
+					},
+					"value": {
+						"type": "string"
+					},
+					"source": {
+						"type": "string"
+					}
+				},
+				"additionalProperties": false
+			}
+		},
+		"assignedSkill": {
+			"type": "string"
+		},
+		"writeScope": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"allowedTools": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"gateTier": {
+			"anyOf": [
+				{
+					"type": "string",
+					"const": "G0"
+				},
+				{
+					"type": "string",
+					"const": "G1"
+				},
+				{
+					"type": "string",
+					"const": "G2"
+				},
+				{
+					"type": "string",
+					"const": "G3"
+				},
+				{
+					"type": "string",
+					"const": "G4"
+				}
+			]
+		},
+		"planNodeId": {
+			"type": "string"
+		}
+	},
+	"additionalProperties": false
+}

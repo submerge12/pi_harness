@@ -3,11 +3,15 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
 
 jobs:
   build:
     name: Node 22 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    if: github.event_name != 'schedule'
 
     strategy:
       fail-fast: false
@@ -40,3 +44,26 @@ jobs:
 
       - name: Smoke CLI
         run: node dist/cli/index.js --help
+
+  worker-reviewer-eval:
+    name: Worker-reviewer eval (DeepSeek)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Run eval
+        run: npm run eval:worker-reviewer
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}

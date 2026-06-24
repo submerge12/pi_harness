@@ -164,6 +164,42 @@ describe("PermissionGate", () => {
 		await expect(gate.handleToolCall(createToolCallEvent("write"))).resolves.toBeUndefined();
 	});
 
+	it("lets scoped deny block a flat tool allow", async () => {
+		const registry = new ToolRegistry();
+		registry.register(createToolRegistration("write", "write"));
+		const gate = new PermissionGate(registry, {
+			...createPolicy({ write: "allow" }),
+			rules: [{ id: "deny-secrets", toolName: "write", subject: "secrets/**", level: "deny" }],
+		});
+
+		await expect(gate.handleToolCall(createToolCallEvent("write", { path: "secrets/api-key.txt" }))).resolves.toEqual({
+			block: true,
+			reason: "Tool write is denied by policy",
+		});
+	});
+
+	it("passes resolved subject metadata to ask callbacks for scoped asks", async () => {
+		const registry = new ToolRegistry();
+		registry.register(createToolRegistration("read", "read-only"));
+		let observedSubject: string | undefined;
+		const gate = new PermissionGate(
+			registry,
+			{
+				...createPolicy(),
+				rules: [{ id: "ask-sensitive", toolName: "read", subject: "sensitive/**", level: "ask" }],
+			},
+			{
+				askCallback: async (_toolName, _args, context) => {
+					observedSubject = context?.subject;
+					return true;
+				},
+			},
+		);
+
+		await expect(gate.handleToolCall(createToolCallEvent("read", { path: "sensitive/report.md" }))).resolves.toBeUndefined();
+		expect(observedSubject).toBe("sensitive/report.md");
+	});
+
 	it("keeps registration-level deny stronger than policy allow", async () => {
 		const registry = new ToolRegistry();
 		registry.register({ ...createToolRegistration("remove", "destructive"), permissionOverride: "deny" });
@@ -172,6 +208,117 @@ describe("PermissionGate", () => {
 		await expect(gate.handleToolCall(createToolCallEvent("remove"))).resolves.toEqual({
 			block: true,
 			reason: "Tool remove is denied by policy",
+		});
+	});
+
+	it("keeps registration-level deny stronger than scoped allow", async () => {
+		const registry = new ToolRegistry();
+		registry.register({ ...createToolRegistration("write", "write"), permissionOverride: "deny" });
+		const gate = new PermissionGate(registry, {
+			...createPolicy(),
+			rules: [{ id: "allow-generated", toolName: "write", subject: "generated/**", level: "allow" }],
+		});
+
+		await expect(gate.handleToolCall(createToolCallEvent("write", { path: "generated/report.md" }))).resolves.toEqual({
+			block: true,
+			reason: "Tool write is denied by policy",
+		});
+	});
+
+	it("denies path writes outside the active worktree lease write scope", async () => {
+		const registry = new ToolRegistry();
+		registry.register(createToolRegistration("write", "write"));
+		const gate = new PermissionGate(registry, createPolicy({ write: "allow" }), {
+			getActiveLease: () => ({ writeScope: ["src/allowed"] }),
+		});
+
+		await expect(gate.handleToolCall(createToolCallEvent("write", { path: "src/outside/file.ts" }))).resolves.toEqual({
+			block: true,
+			reason: "Tool write is denied by write scope",
+		});
+	});
+
+	it("allows normalized path writes inside the active worktree lease write scope", async () => {
+		const registry = new ToolRegistry();
+		registry.register(createToolRegistration("write", "write"));
+		const gate = new PermissionGate(registry, createPolicy({ write: "allow" }), {
+			getActiveLease: () => ({ writeScope: ["./src/allowed"] }),
+		});
+
+		await expect(
+			gate.handleToolCall(createToolCallEvent("write", { path: ".\\src\\allowed\\..\\allowed\\file.ts" })),
+		).resolves.toBeUndefined();
+	});
+
+	it("denies scoped destructive command calls that do not expose a path subject", async () => {
+		const registry = new ToolRegistry();
+		registry.register(createToolRegistration("bash", "destructive"));
+		const decisions: unknown[] = [];
+		const gate = new PermissionGate(registry, createPolicy({ bash: "allow" }), {
+			getActiveLease: () => ({ writeScope: ["src"] }),
+			onDecision: (decision) => decisions.push(decision),
+		});
+
+		await expect(gate.handleToolCall(createToolCallEvent("bash", { command: "echo x > secrets/out.txt" }))).resolves.toEqual({
+			block: true,
+			reason: "Tool bash is denied by write scope",
+		});
+		expect(decisions).toEqual([
+			{
+				toolCallId: "bash-call",
+				toolName: "bash",
+				subject: "echo x > secrets/out.txt",
+				allowed: { level: "deny", ruleId: "write-scope" },
+				writeScope: ["src"],
+			},
+		]);
+	});
+
+	it("records allow decisions for evidence using the same policy result", async () => {
+		const registry = new ToolRegistry();
+		registry.register(createToolRegistration("fetch", "network"));
+		const decisions: unknown[] = [];
+		const gate = new PermissionGate(registry, createPolicy({ fetch: "allow" }), {
+			getActiveLease: () => ({ writeScope: ["src"] }),
+			onDecision: (decision) => decisions.push(decision),
+		});
+
+		await expect(
+			gate.handleToolCall(createToolCallEvent("fetch", { url: "https://example.invalid" })),
+		).resolves.toBeUndefined();
+		expect(decisions).toEqual([
+			{
+				toolCallId: "fetch-call",
+				toolName: "fetch",
+				subject: "",
+				allowed: { level: "allow" },
+				writeScope: ["src"],
+			},
+		]);
+	});
+
+	it("blocks tools outside the active task allowlist", async () => {
+		const registry = new ToolRegistry();
+		registry.register(createToolRegistration("read", "read-only"));
+		registry.register(createToolRegistration("write", "write"));
+		const gate = new PermissionGate(registry, createPolicy({ write: "allow" }), {
+			getActiveToolNames: () => ["read"],
+		});
+
+		await expect(gate.handleToolCall(createToolCallEvent("read", { path: "src/a.ts" }))).resolves.toBeUndefined();
+		await expect(gate.handleToolCall(createToolCallEvent("write", { path: "src/a.ts" }))).resolves.toEqual({
+			block: true,
+			reason: "Tool write is not allowed for this task",
+		});
+	});
+
+	it("blocks unknown tools before policy evaluation", async () => {
+		const registry = new ToolRegistry();
+		const gate = new PermissionGate(registry, createPolicy({ missing: "allow" }));
+
+		await expect(gate.handleToolCall(createToolCallEvent("missing"))).resolves.toEqual({
+			block: true,
+			reason: "Unknown tool missing",
 		});
 	});
 

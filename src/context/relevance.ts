@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { estimateTokens } from "@earendil-works/pi-agent-core";
+import { createTombstoneAnchor } from "./lifecycle.ts";
 
 export const DEFAULT_PRUNE_MIN_TURNS_KEPT = 10;
 export const DEFAULT_PRUNE_MAX_RESULT_TOKENS = 6000;
@@ -224,7 +225,7 @@ function canUseToolResultCandidate(messages: readonly AgentMessage[], group: Too
 }
 
 function addCandidate(candidates: PruneCandidate[], candidate: PruneCandidate): void {
-	if (candidate.tokensRemoved <= 0) return;
+	if (candidate.tokensRemoved <= 0 && candidate.reason !== "oversized_unreferenced_tool_result") return;
 	if (candidates.some((existing) => rangesOverlap(existing.start, existing.end + 1, candidate.start, candidate.end + 1))) {
 		return;
 	}
@@ -232,13 +233,13 @@ function addCandidate(candidates: PruneCandidate[], candidate: PruneCandidate): 
 }
 
 function createTombstoneText(reason: PruneReason, turnIndex: number): string {
-	if (reason === "superseded_tool_result") {
-		return `[result pruned: superseded_tool_result from turn ${turnIndex}]`;
-	}
-	if (reason === "oversized_unreferenced_tool_result") {
-		return `[result pruned: oversized_unreferenced_tool_result from turn ${turnIndex}]`;
-	}
-	return `[result pruned: dead_end_branch_marker from turn ${turnIndex}]`;
+	const tombstone = createTombstoneAnchor({
+		removedSummary: `[result pruned: ${reason} from turn ${turnIndex}]`,
+		anchorId: `context-prune:${reason}:turn-${turnIndex}`,
+		retrievableFrom: "session custom prune entry",
+		reason,
+	});
+	return tombstone.text;
 }
 
 function withTextContent(message: AgentMessage, text: string): AgentMessage {

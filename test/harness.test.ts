@@ -1,5 +1,5 @@
 import { InMemorySessionRepo } from "@earendil-works/pi-agent-core";
-import type { AgentMessage, ExecutionEnv, FileInfo, Session } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, CompactResult, ExecutionEnv, FileInfo, Session } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CacheStrategyDecision } from "../src/cache/types.ts";
@@ -7,6 +7,8 @@ import {
 	AuthenticationError,
 	GenericHarness,
 	buildPrewarmStreamOptions,
+	createInMemoryTraceSink,
+	createSkillCardRegistry,
 	type GenericHarnessInner,
 	resolveApiKeyAndHeaders,
 	resolveHarnessConfig,
@@ -326,6 +328,113 @@ describe("GenericHarness core", () => {
 
 		expect(report).toContain("prune: 1 span");
 		expect(report).toContain("predicted cost $");
+	});
+
+	it("passes request-lifecycle 9-section instructions when compacting after a turn", async () => {
+		const session = await createSession([
+			userAgentMessage("original next step: continue integration"),
+			userAgentMessage("large context ".repeat(1000)),
+		]);
+		let compactInstructions: string | undefined;
+		const inner: GenericHarnessInner = {
+			...noopInner(),
+			compact: async (customInstructions?: string) => {
+				compactInstructions = customInstructions;
+				return {} as CompactResult;
+			},
+		};
+		const harness = new GenericHarness({
+			config: {
+				contextWindow: 20,
+				compaction: {
+					highWaterRatio: 0.1,
+					customInstructions: "Preserve decisions.",
+				},
+			},
+			inner,
+			session,
+		});
+
+		await harness.prompt("trigger compaction");
+
+		expect(compactInstructions).toContain("full_compaction_summary");
+		expect(compactInstructions).toContain("Main request & user intent");
+		expect(compactInstructions).toContain("The user's original wording for the next step");
+		expect(compactInstructions).toContain("Protected recent turns");
+		expect(compactInstructions).toContain("Preserve decisions.");
+	});
+
+	it("enforces the lifecycle frozen prefix across GenericHarness.runRequest turns", async () => {
+		const session = await new InMemorySessionRepo().create();
+		const registry = createSkillCardRegistry();
+		const harness = new GenericHarness({
+			config: { useDefaultTools: false },
+			inner: noopInner(),
+			requestLifecycle: {
+				skillRegistry: registry,
+				routing: { routes: [] },
+			},
+			session,
+		});
+
+		registry.publish({
+			name: "mutated.skill",
+			responsibility: "Mutate the prefix.",
+			whenToUse: "Only after the frozen prefix has been captured.",
+			effects: [],
+			adjacentFalseTriggers: [],
+			positiveExamples: [],
+			negativeExamples: [],
+			inputs: [],
+			outputs: [],
+			tools: [],
+			constraints: [],
+			handoffContract: "Should not be visible in the frozen prefix.",
+		});
+
+		await expect(harness.runRequest({ rawRequest: "hello" })).rejects.toThrow("Frozen prefix changed");
+	});
+
+	it("routes options-bearing prompts through the request lifecycle and preserves execute options", async () => {
+		const session = await new InMemorySessionRepo().create();
+		const trace = createInMemoryTraceSink({ runId: "harness-options", now: () => 1 });
+		const calls: Array<{ text: string; options: unknown }> = [];
+		const inner: GenericHarnessInner = {
+			...noopInner(),
+			prompt: async (text, options) => {
+				calls.push({ text, options });
+				return assistantMessage("stop");
+			},
+		};
+		const promptOptions = { maxTurns: 2 } as Parameters<GenericHarness["prompt"]>[1];
+		const harness = new GenericHarness({
+			config: { useDefaultTools: false },
+			inner,
+			requestLifecycle: {
+				skillRegistry: createSkillCardRegistry(),
+				intake: {
+					extractionRules: [{ kind: "scope", pattern: /scope:([^\s]+)/, source: "test" }],
+					requiredConstraintKinds: ["scope"],
+				},
+				routing: { routes: [] },
+				trace,
+			},
+			session,
+		});
+
+		await harness.prompt("please execute scope:src", promptOptions);
+
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.text).toBe("please execute scope:src");
+		expect(calls[0]?.options).toMatchObject({ maxTurns: 2 });
+		expect(trace.events().map((event) => (event.data as { stage: string }).stage)).toEqual([
+			"intake",
+			"route",
+			"skill-select",
+			"memory-recall",
+			"execute",
+			"memory-write",
+		]);
 	});
 
 	it("marks harness prewarm as skipped when a user turn is queued", async () => {

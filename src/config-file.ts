@@ -42,6 +42,11 @@ const thinkingLevelSchema = Union([
 	Literal("high"),
 	Literal("xhigh"),
 ]);
+const permissionProfileSchema = Union([
+	Literal("read-only"),
+	Literal("workspace-write"),
+	Literal("network"),
+]);
 
 const streamOptionsSchema = TypePartial(
 	TypeObject(
@@ -69,11 +74,22 @@ const sandboxSchema = TypePartial(
 	),
 );
 
+const policyRuleSchema = TypeObject(
+	{
+		id: Optional(TypeString()),
+		toolName: TypeString(),
+		subject: TypeString(),
+		level: permissionLevelSchema,
+	},
+	{ additionalProperties: false },
+);
+
 const policySchema = TypePartial(
 	TypeObject(
 		{
 			defaults: TypeRecord(TypeString(), permissionLevelSchema),
 			tools: TypeRecord(TypeString(), permissionLevelSchema),
+			rules: TypeArray(policyRuleSchema),
 		},
 		{ additionalProperties: false },
 	),
@@ -110,6 +126,53 @@ const eventLogSchema = TypePartial(
 	),
 );
 
+const databaseSchema = TypePartial(
+	TypeObject(
+		{
+			url: TypeString(),
+			maxConnections: TypeNumber(),
+		},
+		{ additionalProperties: false },
+	),
+);
+
+const schedulerTaskSchema = TypePartial(
+	TypeObject(
+		{
+			id: TypeString(),
+			agentProfile: TypeString(),
+			taskType: TypeString(),
+			schedule: TypeRecord(TypeString(), Unknown()),
+			enabled: TypeBoolean(),
+		},
+		{ additionalProperties: false },
+	),
+);
+
+const schedulerSchema = TypePartial(
+	TypeObject(
+		{
+			checkIntervalMs: TypeNumber(),
+			tasks: TypeArray(schedulerTaskSchema),
+		},
+		{ additionalProperties: false },
+	),
+);
+
+const reviewLoopSchema = TypePartial(
+	TypeObject(
+		{
+			enabled: TypeBoolean(),
+			maxAttempts: TypeNumber(),
+			maxTurns: TypeNumber(),
+			reviewerProfile: TypeString(),
+			reviewerMaxTurns: TypeNumber(),
+			runPolicy: TypeRecord(TypeString(), Unknown()),
+		},
+		{ additionalProperties: false },
+	),
+);
+
 const pruningSchema = TypePartial(
 	TypeObject(
 		{
@@ -130,7 +193,6 @@ const agentOverrideSchema = TypePartial(
 			sessionsRoot: TypeString(),
 			provider: TypeString(),
 			modelId: TypeString(),
-			apiHeaders: TypeRecord(TypeString(), TypeString()),
 			thinkingLevel: thinkingLevelSchema,
 			streamOptions: streamOptionsSchema,
 			systemPrompt: TypeString(),
@@ -138,6 +200,8 @@ const agentOverrideSchema = TypePartial(
 			useDefaultTools: TypeBoolean(),
 			sandbox: sandboxSchema,
 			policy: policySchema,
+			permissionProfile: permissionProfileSchema,
+			runPolicy: TypeRecord(TypeString(), Unknown()),
 			contextWindow: TypeNumber(),
 			tokenBudgetRatios: TypeRecord(TypeString(), TypeNumber()),
 			compaction: TypeRecord(TypeString(), Unknown()),
@@ -146,6 +210,9 @@ const agentOverrideSchema = TypePartial(
 			retry: retrySchema,
 			budget: budgetSchema,
 			eventLog: eventLogSchema,
+			database: databaseSchema,
+			scheduler: schedulerSchema,
+			reviewLoop: reviewLoopSchema,
 		},
 		{ additionalProperties: false },
 	),
@@ -160,7 +227,6 @@ const configFileSchema = TypePartial(
 			agents: TypeRecord(TypeString(), agentOverrideSchema),
 			provider: TypeString(),
 			modelId: TypeString(),
-			apiHeaders: TypeRecord(TypeString(), TypeString()),
 			thinkingLevel: thinkingLevelSchema,
 			streamOptions: streamOptionsSchema,
 			systemPrompt: TypeString(),
@@ -168,6 +234,8 @@ const configFileSchema = TypePartial(
 			useDefaultTools: TypeBoolean(),
 			sandbox: sandboxSchema,
 			policy: policySchema,
+			permissionProfile: permissionProfileSchema,
+			runPolicy: TypeRecord(TypeString(), Unknown()),
 			contextWindow: TypeNumber(),
 			tokenBudgetRatios: TypeRecord(TypeString(), TypeNumber()),
 			compaction: TypeRecord(TypeString(), Unknown()),
@@ -176,6 +244,9 @@ const configFileSchema = TypePartial(
 			retry: retrySchema,
 			budget: budgetSchema,
 			eventLog: eventLogSchema,
+			database: databaseSchema,
+			scheduler: schedulerSchema,
+			reviewLoop: reviewLoopSchema,
 		},
 		{ additionalProperties: false },
 	),
@@ -188,7 +259,6 @@ const topLevelConfigKeys = new Set([
 	"agents",
 	"provider",
 	"modelId",
-	"apiHeaders",
 	"thinkingLevel",
 	"streamOptions",
 	"systemPrompt",
@@ -196,6 +266,8 @@ const topLevelConfigKeys = new Set([
 	"useDefaultTools",
 	"sandbox",
 	"policy",
+	"permissionProfile",
+	"runPolicy",
 	"contextWindow",
 	"tokenBudgetRatios",
 	"compaction",
@@ -204,6 +276,9 @@ const topLevelConfigKeys = new Set([
 	"retry",
 	"budget",
 	"eventLog",
+	"database",
+	"scheduler",
+	"reviewLoop",
 ]);
 
 const agentOverrideConfigKeys = new Set([...topLevelConfigKeys].filter((key) => key !== "agent" && key !== "agents"));
@@ -211,10 +286,13 @@ const agentOverrideConfigKeys = new Set([...topLevelConfigKeys].filter((key) => 
 const nestedConfigKeys = new Map<string, ReadonlySet<string>>([
 	["streamOptions", new Set(["timeoutMs", "maxRetries", "maxRetryDelayMs", "headers", "metadata", "cacheRetention"])],
 	["sandbox", new Set(["roots", "maxOutputChars", "bashTimeoutSeconds", "fetchMaxBytes"])],
-	["policy", new Set(["defaults", "tools"])],
+	["policy", new Set(["defaults", "tools", "rules"])],
 	["retry", new Set(["attempts", "baseDelayMs", "maxDelayMs"])],
 	["budget", new Set(["maxUsdPerSession", "warnAtUsd"])],
 	["eventLog", new Set(["enabled", "filePath"])],
+	["database", new Set(["url", "maxConnections"])],
+	["scheduler", new Set(["checkIntervalMs", "tasks"])],
+	["reviewLoop", new Set(["enabled", "maxAttempts", "maxTurns", "reviewerProfile", "reviewerMaxTurns", "runPolicy"])],
 	["pruning", new Set(["enabled", "minTurnsKept", "maxResultTokens", "expectedFutureTurns", "prewarmAfterPrune"])],
 ]);
 
@@ -230,19 +308,42 @@ function toKeyPath(path: readonly string[]): string {
 	return path.length > 0 ? path.join(".") : "<root>";
 }
 
-function findApiKeyPath(value: unknown, path: string[] = []): string | undefined {
+function isSensitiveHeaderName(name: string): boolean {
+	const normalized = name.toLowerCase();
+	return (
+		normalized.includes("authorization") ||
+		normalized.includes("cookie") ||
+		/(^|[-_])api[-_]?key($|[-_])/.test(normalized) ||
+		/(^|[-_])token($|[-_])/.test(normalized) ||
+		/(^|[-_])secret($|[-_])/.test(normalized) ||
+		/(^|[-_])credential($|[-_])/.test(normalized)
+	);
+}
+
+function findSensitiveStreamHeaderPath(value: JsonRecord, path: readonly string[]): string | undefined {
+	const streamOptions = value.streamOptions;
+	if (!isJsonRecord(streamOptions) || !isJsonRecord(streamOptions.headers)) return undefined;
+	for (const headerName of Object.keys(streamOptions.headers)) {
+		if (isSensitiveHeaderName(headerName)) return toKeyPath([...path, "streamOptions", "headers", headerName]);
+	}
+	return undefined;
+}
+
+function findForbiddenSecretPath(value: unknown, path: string[] = []): string | undefined {
 	if (Array.isArray(value)) {
 		for (let index = 0; index < value.length; index++) {
-			const nestedPath = findApiKeyPath(value[index], [...path, String(index)]);
+			const nestedPath = findForbiddenSecretPath(value[index], [...path, String(index)]);
 			if (nestedPath) return nestedPath;
 		}
 		return undefined;
 	}
 	if (!isJsonRecord(value)) return undefined;
+	const streamHeaderPath = findSensitiveStreamHeaderPath(value, path);
+	if (streamHeaderPath) return streamHeaderPath;
 	for (const [key, nestedValue] of Object.entries(value)) {
 		const nextPath = [...path, key];
-		if (key === "apiKey") return toKeyPath(nextPath);
-		const nestedPath = findApiKeyPath(nestedValue, nextPath);
+		if (key === "apiKey" || key === "apiHeaders") return toKeyPath(nextPath);
+		const nestedPath = findForbiddenSecretPath(nestedValue, nextPath);
 		if (nestedPath) return nestedPath;
 	}
 	return undefined;
@@ -294,8 +395,8 @@ function getValidationMessage(error: unknown): string {
 
 function validateConfig(source: string, value: unknown): asserts value is JsonRecord {
 	if (!isJsonRecord(value)) throw new Error(`${source} config must be a JSON object`);
-	const apiKeyPath = findApiKeyPath(value);
-	if (apiKeyPath) throw new Error(`${source} config contains forbidden key ${apiKeyPath}`);
+	const forbiddenSecretPath = findForbiddenSecretPath(value);
+	if (forbiddenSecretPath) throw new Error(`${source} config contains forbidden key ${forbiddenSecretPath}`);
 	const unknownKeyPath = findUnknownKeyPath(value);
 	if (unknownKeyPath) throw new Error(`${source} config contains unknown key ${unknownKeyPath}`);
 	if (Check(configFileSchema, value)) return;

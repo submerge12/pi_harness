@@ -1,0 +1,26 @@
+{
+	"type": "object",
+	"required": [
+		"id",
+		"reason",
+		"changes"
+	],
+	"properties": {
+		"id": {
+			"type": "string"
+		},
+		"reason": {
+			"type": "string"
+		},
+		"changes": {
+			"type": "array",
+			"items": {
+				"type": "string"
+			}
+		},
+		"createdAt": {
+			"type": "number"
+		}
+	},
+	"additionalProperties": false
+}

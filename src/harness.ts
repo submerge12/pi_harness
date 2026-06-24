@@ -24,18 +24,30 @@ import { CacheStrategyEngine } from "./cache/strategy-engine.ts";
 import type { HarnessConfig, ResolvedHarnessConfig } from "./config.ts";
 import { resolveHarnessConfig } from "./config.ts";
 import { CompactionPolicy } from "./context/compaction-policy.ts";
+import { createFullCompactionSummary } from "./context/lifecycle.ts";
 import { ContextManager } from "./context/manager.ts";
 import { PruneExecutor } from "./context/prune-executor.ts";
+import type { CheckpointStore } from "./checkpoint/index.ts";
+import { recordEvidenceGatewayEntries, type EvidenceGateway } from "./evidence/index.ts";
+import type { ActiveWorktreeLeaseProvider } from "./execution/index.ts";
+import {
+	createRequestLifecycleDeps,
+	runAgentRequest,
+	type AgentRequestDeps,
+	type AgentRequestInput,
+	type AgentRequestResult,
+	type RequestLifecycleRuntimeOptions,
+} from "./lifecycle/index.ts";
 import { resolveHarnessModel, resolveModel } from "./model-resolver.ts";
 import { BudgetTracker } from "./observability/budget.ts";
 import { CacheReportTracker } from "./observability/cache-report.ts";
 import { CostTracker } from "./observability/cost-tracker.ts";
 import { EventLog, createSessionEventLogPath } from "./observability/event-log.ts";
-import type { HarnessEvent as ObservabilityEvent } from "./observability/types.ts";
+import type { CostSummary, HarnessEvent as ObservabilityEvent } from "./observability/types.ts";
 import { withRetry } from "./resilience/retry.ts";
 import { createJsonlSession } from "./session/factory.ts";
 import { createDefaultToolset } from "./tools/builtin/index.ts";
-import { PermissionGate } from "./tools/permission.ts";
+import { PermissionGate, ToolPermissionDecisionStore } from "./tools/permission.ts";
 
 export interface ApiKeyResolutionConfig {
 	apiKey?: string;
@@ -61,6 +73,24 @@ class AssistantMessageError extends Error {
 		this.name = "AssistantMessageError";
 		this.status = status;
 	}
+}
+
+const lifecycleInternalPrompt = Symbol("pi-harness.lifecycleInternalPrompt");
+type InternalPromptOptions = AgentHarnessPromptOptions & { [lifecycleInternalPrompt]?: true };
+
+function markLifecycleInternalPrompt(options?: AgentHarnessPromptOptions): InternalPromptOptions {
+	return { ...(options ?? {}), [lifecycleInternalPrompt]: true } as InternalPromptOptions;
+}
+
+function isLifecycleInternalPromptOptions(
+	options: AgentHarnessPromptOptions | undefined,
+): options is InternalPromptOptions {
+	return Boolean((options as InternalPromptOptions | undefined)?.[lifecycleInternalPrompt]);
+}
+
+function stripLifecycleInternalPrompt(options: InternalPromptOptions): AgentHarnessPromptOptions | undefined {
+	const { [lifecycleInternalPrompt]: _marker, ...rest } = options;
+	return Object.keys(rest).length === 0 ? undefined : rest as AgentHarnessPromptOptions;
 }
 
 export async function resolveApiKeyAndHeaders(
@@ -128,19 +158,36 @@ export interface GenericHarnessOptions {
 	env?: ExecutionEnv;
 	session?: Session;
 	inner?: GenericHarnessInner;
+	evidenceGateway?: EvidenceGateway;
+	getActiveLease?: ActiveWorktreeLeaseProvider["getActiveLease"];
+	requestLifecycle?: RequestLifecycleRuntimeOptions;
+	checkpoint?: CheckpointStore;
+	budgetTracker?: BudgetTracker;
+	costTracker?: CostTracker;
+}
+
+export interface GenericHarnessRuntimeOptions {
+	evidenceGateway?: EvidenceGateway;
+	getActiveLease?: ActiveWorktreeLeaseProvider["getActiveLease"];
+	requestLifecycle?: RequestLifecycleRuntimeOptions;
+	checkpoint?: CheckpointStore;
+	budgetTracker?: BudgetTracker;
+	costTracker?: CostTracker;
 }
 
 export class GenericHarness {
 	private readonly config: ResolvedHarnessConfig;
 	private readonly budgetTracker?: BudgetTracker;
 	private readonly cacheReportTracker = new CacheReportTracker();
-	private readonly costTracker = new CostTracker();
+	private readonly costTracker: CostTracker;
 	private readonly env?: ExecutionEnv;
 	private readonly session?: Session;
 	private readonly inner: GenericHarnessInner;
+	private readonly requestLifecycle: ReturnType<typeof createRequestLifecycleDeps>;
 	private readonly localListeners = new Set<(event: AgentHarnessEvent, signal?: AbortSignal) => Promise<void> | void>();
 	private readonly unsubscribes: Array<() => void> = [];
 	private readonly disposers: Array<() => void | Promise<void>> = [];
+	private activeTaskToolNames: readonly string[] | undefined;
 	private pruneExecutor?: PruneExecutor;
 	private pruneBoundToTurnEnd = false;
 	private disposed = false;
@@ -149,7 +196,9 @@ export class GenericHarness {
 		this.config = resolveHarnessConfig(options.config);
 		this.env = options.env;
 		this.session = options.session;
-		this.budgetTracker = this.config.budget ? new BudgetTracker(this.config.budget) : undefined;
+		this.budgetTracker = options.budgetTracker ?? (this.config.budget ? new BudgetTracker(this.config.budget) : undefined);
+		this.costTracker = options.costTracker ?? new CostTracker();
+		this.requestLifecycle = createRequestLifecycleDeps(this.config, options.requestLifecycle);
 		this.inner = options.inner ?? this.createInner(options);
 		if (options.inner) this.configurePruneExecutor(options.session);
 		if (!options.inner) this.installInternalSubscriptions();
@@ -160,6 +209,11 @@ export class GenericHarness {
 		if (!options.session) throw new Error("GenericHarness requires session when inner is not provided");
 
 		const model = resolveHarnessModel(this.config);
+		const permissionDecisions = new ToolPermissionDecisionStore();
+		const evidenceGateway = recordEvidenceGatewayEntries(
+			options.evidenceGateway,
+			options.requestLifecycle?.workerReviewerLoop?.receiptCollector,
+		);
 		const registry = this.config.useDefaultTools
 			? createDefaultToolset({
 					env: options.env,
@@ -167,6 +221,10 @@ export class GenericHarness {
 					maxOutputChars: this.config.sandbox?.maxOutputChars,
 					bashTimeoutSeconds: this.config.sandbox?.bashTimeoutSeconds,
 					fetchMaxBytes: this.config.sandbox?.fetchMaxBytes,
+					evidenceGateway,
+					getPermissionDecision: permissionDecisions.lookup,
+					checkpoint: options.checkpoint ?? options.requestLifecycle?.workerReviewerLoop?.checkpoint,
+					commandRules: this.config.commandRules,
 				})
 			: undefined;
 		const tools = this.config.tools ?? registry?.toAgentTools();
@@ -194,7 +252,12 @@ export class GenericHarness {
 
 		if (registry) {
 			this.unsubscribes.push(
-				new PermissionGate(registry, this.config.policy, { askCallback: this.config.askPermission }).install(inner),
+				new PermissionGate(registry, this.config.policy, {
+					askCallback: this.config.askPermission,
+					getActiveLease: options.getActiveLease,
+					getActiveToolNames: () => this.activeTaskToolNames,
+					onDecision: (decision) => permissionDecisions.record(decision),
+				}).install(inner),
 			);
 		}
 		this.unsubscribes.push(new ContextManager({
@@ -212,6 +275,15 @@ export class GenericHarness {
 	}
 
 	async prompt(text: string, options?: AgentHarnessPromptOptions): Promise<AssistantMessage> {
+		if (isLifecycleInternalPromptOptions(options)) {
+			return await this.executePrompt(text, stripLifecycleInternalPrompt(options));
+		}
+		const result = await this.runRequest({ rawRequest: text }, options);
+		if (result.entryStage === "intake") return this.assistantTextMessage(result.clarification);
+		return result.message;
+	}
+
+	private async executePrompt(text: string, options?: AgentHarnessPromptOptions): Promise<AssistantMessage> {
 		const budgetDecision = this.budgetTracker?.checkBeforeTurn();
 		if (budgetDecision && !budgetDecision.allowed) throw new Error(budgetDecision.message ?? "budget exceeded");
 
@@ -244,6 +316,64 @@ export class GenericHarness {
 		if (!this.pruneBoundToTurnEnd) await this.pruneAfterTurn();
 		await this.compactAfterTurn();
 		return result;
+	}
+
+	async runRequest(input: AgentRequestInput, promptOptions?: AgentHarnessPromptOptions): Promise<AgentRequestResult> {
+		return await runAgentRequest({
+			prompt: async (text, options) => await this.prompt(
+				text,
+				markLifecycleInternalPrompt(
+					(options as AgentHarnessPromptOptions | undefined) ?? promptOptions,
+				),
+			),
+			promptTaskAttempt: async (taskContract, text, options) => await this.withActiveTaskToolNames(
+				taskContract.allowedTools,
+				() => this.prompt(
+					text,
+					markLifecycleInternalPrompt(
+						(options as AgentHarnessPromptOptions | undefined) ?? promptOptions,
+					),
+				),
+			),
+			skill: async (name, additionalInstructions) => await this.skill(name, additionalInstructions),
+		}, input, this.requestLifecycle);
+	}
+
+	getActiveTaskToolNames(): readonly string[] | undefined {
+		return this.activeTaskToolNames ? [...this.activeTaskToolNames] : undefined;
+	}
+
+	private async withActiveTaskToolNames<T>(
+		toolNames: readonly string[] | undefined,
+		fn: () => Promise<T>,
+	): Promise<T> {
+		const previous = this.activeTaskToolNames;
+		this.activeTaskToolNames = toolNames ? [...toolNames] : undefined;
+		try {
+			return await fn();
+		} finally {
+			this.activeTaskToolNames = previous;
+		}
+	}
+
+	private assistantTextMessage(text: string): AssistantMessage {
+		return {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "openai-completions",
+			provider: this.config.provider,
+			model: this.config.modelId,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
 	}
 
 	subscribe(listener: (event: AgentHarnessEvent, signal?: AbortSignal) => Promise<void> | void): () => void {
@@ -327,6 +457,10 @@ export class GenericHarness {
 		return this.inner;
 	}
 
+	getRequestLifecycleDeps(): AgentRequestDeps {
+		return this.requestLifecycle;
+	}
+
 	getSession(): Session | undefined {
 		return this.session;
 	}
@@ -346,7 +480,18 @@ export class GenericHarness {
 			policy: {
 				defaults: { ...this.config.policy.defaults },
 				tools: this.config.policy.tools ? { ...this.config.policy.tools } : undefined,
+				rules: this.config.policy.rules ? this.config.policy.rules.map((rule) => ({ ...rule })) : undefined,
 			},
+			permissionProfile: this.config.permissionProfile,
+			commandRules: this.config.commandRules ? [...this.config.commandRules] : undefined,
+			runPolicy: this.config.runPolicy
+				? {
+						...this.config.runPolicy,
+						budget: this.config.runPolicy.budget ? { ...this.config.runPolicy.budget } : undefined,
+						repairLimits: this.config.runPolicy.repairLimits ? { ...this.config.runPolicy.repairLimits } : undefined,
+						gateTiers: this.config.runPolicy.gateTiers ? { ...this.config.runPolicy.gateTiers } : undefined,
+					}
+				: undefined,
 			tokenBudgetRatios: this.config.tokenBudgetRatios ? { ...this.config.tokenBudgetRatios } : undefined,
 			compaction: this.config.compaction ? { ...this.config.compaction } : undefined,
 			pruning: { ...this.config.pruning },
@@ -354,11 +499,59 @@ export class GenericHarness {
 			retry: this.config.retry ? { ...this.config.retry } : undefined,
 			budget: this.config.budget ? { ...this.config.budget } : undefined,
 			eventLog: this.config.eventLog ? { ...this.config.eventLog } : undefined,
+			database: this.config.database ? { ...this.config.database } : undefined,
+			scheduler: this.config.scheduler
+				? {
+						...this.config.scheduler,
+						tasks: this.config.scheduler.tasks ? [...this.config.scheduler.tasks] : undefined,
+					}
+				: undefined,
+			reviewLoop: this.config.reviewLoop
+				? {
+						...this.config.reviewLoop,
+						runPolicy: this.config.reviewLoop.runPolicy
+							? {
+									...this.config.reviewLoop.runPolicy,
+									budget: this.config.reviewLoop.runPolicy.budget
+										? { ...this.config.reviewLoop.runPolicy.budget }
+										: undefined,
+									repairLimits: this.config.reviewLoop.runPolicy.repairLimits
+										? { ...this.config.reviewLoop.runPolicy.repairLimits }
+										: undefined,
+									gateTiers: this.config.reviewLoop.runPolicy.gateTiers
+										? { ...this.config.reviewLoop.runPolicy.gateTiers }
+										: undefined,
+								}
+							: undefined,
+					}
+				: undefined,
+			internal: this.config.internal
+				? {
+						spawnAgentDepth: this.config.internal.spawnAgentDepth,
+						inheritedPolicy: this.config.internal.inheritedPolicy
+							? {
+									defaults: this.config.internal.inheritedPolicy.defaults
+										? { ...this.config.internal.inheritedPolicy.defaults }
+										: undefined,
+									tools: this.config.internal.inheritedPolicy.tools
+										? { ...this.config.internal.inheritedPolicy.tools }
+										: undefined,
+									rules: this.config.internal.inheritedPolicy.rules
+										? this.config.internal.inheritedPolicy.rules.map((rule) => ({ ...rule }))
+										: undefined,
+								}
+							: undefined,
+					}
+				: undefined,
 		};
 	}
 
 	getCacheReport(): string {
 		return this.cacheReportTracker.render();
+	}
+
+	getCostSummary(): CostSummary {
+		return this.costTracker.getSummary();
 	}
 
 	private installInternalSubscriptions(): void {
@@ -443,7 +636,34 @@ export class GenericHarness {
 		const context = await this.session.buildContext();
 		const messages = this.pruneExecutor?.rewriteContext(context.messages) ?? context.messages;
 		if (!policy.shouldCompact(messages)) return;
-		await this.inner.compact(this.config.compaction?.customInstructions);
+		await this.inner.compact(this.buildLifecycleCompactionInstructions(messages));
+	}
+
+	private buildLifecycleCompactionInstructions(messages: AgentMessage[]): string {
+		const summary = createFullCompactionSummary({
+			sections: {
+				"Main request & user intent": "Summarize the active request and preserve the user's intent.",
+				"Key technical concepts": "Preserve important APIs, lifecycle stages, constraints, and invariants.",
+				"Files & code": "Preserve concrete file paths, symbols, and code decisions.",
+				"Pitfalls encountered & fixes": "Preserve failed checks, fixes applied, and unresolved risks.",
+				"Problem-solving process": "Preserve the sequence of decisions and verification evidence.",
+				"All user information, itemized": "Preserve explicit user preferences, constraints, and corrections.",
+				"Pending tasks": "Preserve incomplete work and required next actions.",
+				"What is currently being worked on": "Preserve the current implementation focus.",
+			},
+			originalNextStepWording: lastUserText(messages) ?? "",
+			recentTurns: messages,
+			protectedTurnCount: 10,
+		});
+		const customInstructions = this.config.compaction?.customInstructions;
+		return [
+			...(customInstructions ? ["Custom instructions:", customInstructions, ""] : []),
+			"full_compaction_summary",
+			...summary.sections.map((section) => `## ${section.title}\n${section.content}`),
+			"",
+			"Protected recent turns:",
+			...summary.protectedRecentTurns.map((message, index) => `${index + 1}. ${messageText(message)}`),
+		].join("\n");
 	}
 
 	private async pruneAfterTurn(): Promise<void> {
@@ -585,6 +805,31 @@ function providerReasoning(level: ThinkingLevel): SimpleStreamOptions["reasoning
 	return level === "off" ? undefined : (level as SimpleStreamOptions["reasoning"]);
 }
 
+function lastUserText(messages: readonly AgentMessage[]): string | undefined {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (asRecord(message)?.role === "user") return messageText(message);
+	}
+	return undefined;
+}
+
+function messageText(message: AgentMessage | undefined): string {
+	const record = asRecord(message);
+	if (!record) return "";
+	const content = record.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => {
+			const partRecord = asRecord(part);
+			if (partRecord?.type === "text" && typeof partRecord.text === "string") return partRecord.text;
+			if (partRecord?.type === "toolCall") return JSON.stringify(partRecord);
+			return "";
+		})
+		.filter(Boolean)
+		.join(" ");
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
@@ -609,6 +854,7 @@ export async function createGenericHarnessFromSession(
 	config: HarnessConfig,
 	env: ExecutionEnv,
 	session: Session,
+	runtimeOptions: GenericHarnessRuntimeOptions = {},
 ): Promise<GenericHarness> {
 	const resolvedConfig = resolveHarnessConfig(config);
 	const metadata = await session.getMetadata();
@@ -626,5 +872,5 @@ export async function createGenericHarnessFromSession(
 							metadata.id,
 						),
 				};
-	return new GenericHarness({ config: { ...resolvedConfig, eventLog }, env, session });
+	return new GenericHarness({ config: { ...resolvedConfig, eventLog }, env, session, ...runtimeOptions });
 }
