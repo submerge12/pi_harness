@@ -24,11 +24,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout Compass Health Agent
+        run: git clone --depth 1 --branch codex/pi-harness-alignment https://github.com/submerge12/compress_health_agent.git ../compass-health-agent
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
+      - name: Build Compass Health Agent
+        working-directory: ../compass-health-agent
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm build
 
       - name: Install
         run: npm ci
@@ -54,11 +64,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout Compass Health Agent
+        run: git clone --depth 1 --branch codex/pi-harness-alignment https://github.com/submerge12/compress_health_agent.git ../compass-health-agent
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
+      - name: Build Compass Health Agent
+        working-directory: ../compass-health-agent
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm build
 
       - name: Install
         run: npm ci
