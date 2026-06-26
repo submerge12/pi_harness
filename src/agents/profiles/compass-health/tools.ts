@@ -3,7 +3,7 @@ import { Type } from "typebox";
 // Static is used implicitly via TypeBox parameter inference
 import type { ToolRegistration } from "../../../tools/types.ts";
 
-import { initToolContext, type ToolContext } from "compass-health-agent/tools/context";
+import type { ToolContext } from "compass-health-agent/tools/context";
 import * as handlers from "compass-health-agent/tools/handlers";
 
 // ── Shared context (set by install hook, used by execute closures) ──
@@ -19,7 +19,7 @@ export function getToolContext(): ToolContext | null {
 }
 
 function requireCtx(): ToolContext {
-	if (!ctx) throw new Error("Compass Health agent not initialized — install hook has not run.");
+	if (!ctx) throw new Error("Compass Health agent not initialized �?install hook has not run.");
 	return ctx;
 }
 
@@ -107,6 +107,86 @@ const recipeRecommendParams = Type.Object({
 	maxKcal: Type.Optional(Type.Number()),
 });
 
+const memoryKind = Type.Union([
+	Type.Literal("preference"),
+	Type.Literal("dislike"),
+	Type.Literal("routine"),
+	Type.Literal("note"),
+]);
+
+const rememberParams = Type.Object({
+	kind: memoryKind,
+	subject: Type.String(),
+	content: Type.String(),
+	sourceText: Type.Optional(Type.String()),
+	confidence: Type.Optional(Type.Number()),
+});
+
+const recallParams = Type.Object({
+	query: Type.String(),
+	kinds: Type.Optional(Type.Array(memoryKind)),
+	limit: Type.Optional(Type.Number()),
+});
+const dishMealCategory = Type.Union([
+	Type.Literal("breakfast"),
+	Type.Literal("main"),
+]);
+
+const dishSource = Type.Union([
+	Type.Literal("user_nl"),
+	Type.Literal("agent_research"),
+	Type.Literal("preset"),
+]);
+
+const dishDraftIngredientParams = Type.Object({
+	name: Type.Optional(Type.String()),
+	slug: Type.Optional(Type.String()),
+	grams: Type.Number(),
+});
+
+const dishDraftParams = Type.Object({
+	name: Type.String(),
+	mealCategory: dishMealCategory,
+	ingredients: Type.Array(dishDraftIngredientParams),
+	seasonings: Type.Optional(Type.Array(Type.String())),
+	method: Type.Optional(Type.String()),
+	source: dishSource,
+	notes: Type.Optional(Type.String()),
+});
+
+const proposeDishParams = Type.Object({
+	naturalLanguage: Type.Optional(Type.String()),
+	draft: Type.Optional(dishDraftParams),
+});
+
+const dishNutritionParams = Type.Object({
+	kcal: Type.Number(),
+	proteinGrams: Type.Number(),
+	carbsGrams: Type.Number(),
+	fatGrams: Type.Number(),
+	sodiumMg: Type.Number(),
+});
+
+const resolvedDishIngredientParams = Type.Object({
+	slug: Type.String(),
+	grams: Type.Number(),
+});
+
+const saveDishParams = Type.Object({
+	name: Type.String(),
+	mealCategory: dishMealCategory,
+	ingredients: Type.Array(resolvedDishIngredientParams),
+	seasonings: Type.Array(Type.String()),
+	method: Type.Optional(Type.String()),
+	source: dishSource,
+	notes: Type.Optional(Type.String()),
+	slug: Type.String(),
+	nutrition: dishNutritionParams,
+	buckets: Type.Array(Type.String()),
+	roles: Type.Array(Type.String()),
+	unresolved: Type.Array(Type.String()),
+});
+
 // ── Tool registrations ──
 
 export function createCompassHealthToolRegistrations(): ToolRegistration<any, any>[] {
@@ -140,7 +220,7 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 			tool: {
 				name: "log_water",
 				label: "Log Water",
-				description: "Log water intake. Understands ml, cups, and Chinese units (杯).",
+				description: "Log water intake. Understands ml, cups, and Chinese units (�?.",
 				parameters: logWaterParams,
 				async execute(_toolCallId, params: any) {
 					return jsonResult(await handlers.handleLogWater(requireCtx(), params));
@@ -209,7 +289,30 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 			},
 			accessLevel: "write",
 		},
-
+		{
+			tool: {
+				name: "remember",
+				label: "Remember",
+				description: "Store a durable user preference, dislike, routine, or note.",
+				parameters: rememberParams,
+				async execute(_toolCallId, params: any) {
+					return jsonResult(await handlers.handleRemember(requireCtx(), params));
+				},
+			},
+			accessLevel: "write",
+		},
+		{
+			tool: {
+				name: "save_dish",
+				label: "Save Dish",
+				description: "Persist an approved user dish so it becomes a meal-plan candidate.",
+				parameters: saveDishParams,
+				async execute(_toolCallId, params: any) {
+					return jsonResult(await handlers.handleSaveDish(requireCtx(), params));
+				},
+			},
+			accessLevel: "write",
+		},
 		// ── Read-only tools ──
 		{
 			tool: {
@@ -255,6 +358,30 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				parameters: weeklyReportParams,
 				async execute(_toolCallId, params: any) {
 					return jsonResult(await handlers.handleWeeklyReport(requireCtx(), params));
+				},
+			},
+			accessLevel: "read-only",
+		},
+		{
+			tool: {
+				name: "recall",
+				label: "Recall",
+				description: "Recall durable user preferences, dislikes, routines, and notes.",
+				parameters: recallParams,
+				async execute(_toolCallId, params: any) {
+					return jsonResult(await handlers.handleRecall(requireCtx(), params));
+				},
+			},
+			accessLevel: "read-only",
+		},
+		{
+			tool: {
+				name: "propose_dish",
+				label: "Propose Dish",
+				description: "Review a proposed user dish with resolved ingredients and computed nutrition without saving it.",
+				parameters: proposeDishParams,
+				async execute(_toolCallId, params: any) {
+					return jsonResult(await handlers.handleProposeDish(requireCtx(), params));
 				},
 			},
 			accessLevel: "read-only",
