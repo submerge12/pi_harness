@@ -37,8 +37,10 @@ jobs:
         working-directory: ../compass-health-agent
         run: |
           corepack enable
-          corepack pnpm install --frozen-lockfile
-          corepack pnpm build
+          corepack prepare pnpm@10.28.2 --activate
+          pnpm --version
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Install
         run: npm ci
@@ -77,8 +79,10 @@ jobs:
         working-directory: ../compass-health-agent
         run: |
           corepack enable
-          corepack pnpm install --frozen-lockfile
-          corepack pnpm build
+          corepack prepare pnpm@10.28.2 --activate
+          pnpm --version
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Install
         run: npm ci
