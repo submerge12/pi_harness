@@ -19,7 +19,7 @@ export function getToolContext(): ToolContext | null {
 }
 
 function requireCtx(): ToolContext {
-	if (!ctx) throw new Error("Compass Health agent not initialized â€?install hook has not run.");
+	if (!ctx) throw new Error("Compass Health agent not initialized â€” install hook has not run.");
 	return ctx;
 }
 
@@ -138,6 +138,10 @@ const dishSource = Type.Union([
 	Type.Literal("preset"),
 ]);
 
+const dishRole = Type.Union([Type.Literal("main"), Type.Literal("side")]);
+
+const sideKind = Type.Union([Type.Literal("vegetable"), Type.Literal("soup")]);
+
 const dishDraftIngredientParams = Type.Object({
 	name: Type.Optional(Type.String()),
 	slug: Type.Optional(Type.String()),
@@ -147,8 +151,11 @@ const dishDraftIngredientParams = Type.Object({
 const dishDraftParams = Type.Object({
 	name: Type.String(),
 	mealCategory: dishMealCategory,
+	role: Type.Optional(dishRole),
+	sideKind: Type.Optional(sideKind),
+	selfContained: Type.Optional(Type.Boolean()),
 	ingredients: Type.Array(dishDraftIngredientParams),
-	seasonings: Type.Optional(Type.Array(Type.String())),
+	seasonings: Type.Array(Type.String()),
 	method: Type.Optional(Type.String()),
 	source: dishSource,
 	notes: Type.Optional(Type.String()),
@@ -175,6 +182,9 @@ const resolvedDishIngredientParams = Type.Object({
 const saveDishParams = Type.Object({
 	name: Type.String(),
 	mealCategory: dishMealCategory,
+	role: Type.Optional(dishRole),
+	sideKind: Type.Optional(sideKind),
+	selfContained: Type.Optional(Type.Boolean()),
 	ingredients: Type.Array(resolvedDishIngredientParams),
 	seasonings: Type.Array(Type.String()),
 	method: Type.Optional(Type.String()),
@@ -220,7 +230,7 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 			tool: {
 				name: "log_water",
 				label: "Log Water",
-				description: "Log water intake. Understands ml, cups, and Chinese units (æ?.",
+				description: "Log water intake. Understands ml, cups, and Chinese units (æ¯).",
 				parameters: logWaterParams,
 				async execute(_toolCallId, params: any) {
 					return jsonResult(await handlers.handleLogWater(requireCtx(), params));
