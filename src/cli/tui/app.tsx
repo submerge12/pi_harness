@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Static, Text, useApp, useInput, useWindowSize } from "ink";
+import { Box, Static, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { filterSlashCommands, type ReplHarness } from "../commands.ts";
 import { CommandMenu } from "./command-menu.tsx";
@@ -25,7 +25,6 @@ function toneColor(tone: string): "cyan" | "green" | "red" | "gray" | undefined 
 
 export function App({ harness, permissionController }: AppProps): React.JSX.Element {
 	const { exit } = useApp();
-	const { rows } = useWindowSize();
 	const permission = usePermissionSnapshot(permissionController);
 	const inputLocked = Boolean(permission.request);
 	const session = useHarness(harness, { onExit: () => exit() });
@@ -40,7 +39,7 @@ export function App({ harness, permissionController }: AppProps): React.JSX.Elem
 	);
 
 	return (
-		<Box flexDirection="column" minHeight={rows}>
+		<Box flexDirection="column">
 			<Static items={session.transcript}>
 				{(item) => (
 					<Text key={item.id} color={toneColor(item.tone)}>
@@ -69,8 +68,6 @@ export function App({ harness, permissionController }: AppProps): React.JSX.Elem
 
 			{session.renderState.footerText ? <Text color="gray">{session.renderState.footerText}</Text> : null}
 			<PermissionPromptView controller={permissionController} onCancel={session.exitNow} />
-
-			<Box flexGrow={1} />
 
 			<CommandMenu
 				active={session.commandMenuOpen}
