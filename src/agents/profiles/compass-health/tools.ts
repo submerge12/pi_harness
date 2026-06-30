@@ -34,6 +34,17 @@ function jsonResult<T>(result: T): AgentToolResult<T> {
 
 // ── Parameter schemas ──
 
+const goalKind = Type.Union([
+	Type.Literal("improve_health"),
+	Type.Literal("body_recomp"),
+	Type.Literal("fat_loss_slow"),
+	Type.Literal("fat_loss_moderate"),
+	Type.Literal("fat_loss_fast"),
+	Type.Literal("muscle_gain_slow"),
+	Type.Literal("muscle_gain_moderate"),
+	Type.Literal("muscle_gain_fast"),
+]);
+
 const setProfileParams = Type.Object({
 	sex: Type.Union([Type.Literal("male"), Type.Literal("female")]),
 	ageYears: Type.Number(),
@@ -45,8 +56,10 @@ const setProfileParams = Type.Object({
 		Type.Literal("moderately_active"),
 		Type.Literal("strength_training"),
 	]),
-	goal: Type.String(),
+	goal: goalKind,
 });
+
+const getProfileParams = Type.Object({});
 
 const nutritionEstimateParams = Type.Object({
 	description: Type.String(),
@@ -206,7 +219,7 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 			tool: {
 				name: "set_profile",
 				label: "Set Profile",
-				description: "Set or update the user's physical profile and compute calorie/macro targets.",
+				description: "Set or update the user's physical profile and compute calorie/macro targets. goal must be a canonical value; for fat loss or muscle gain choose a slow/moderate/fast tier (e.g. fat_loss_moderate).",
 				parameters: setProfileParams,
 				async execute(_toolCallId, params: any) {
 					return jsonResult(await handlers.handleSetProfile(requireCtx(), params));
@@ -324,6 +337,18 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 			accessLevel: "write",
 		},
 		// ── Read-only tools ──
+		{
+			tool: {
+				name: "get_profile",
+				label: "Get Profile",
+				description: "Read the user's saved profile and calorie/macro targets; returns null if none exists yet.",
+				parameters: getProfileParams,
+				async execute(_toolCallId, params: any) {
+					return jsonResult(await handlers.handleGetProfile(requireCtx(), params));
+				},
+			},
+			accessLevel: "read-only",
+		},
 		{
 			tool: {
 				name: "nutrition_estimate",
