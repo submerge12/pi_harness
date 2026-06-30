@@ -15,7 +15,8 @@ import type { HarnessEvent } from "../observability/types.ts";
 import { createJsonlSession, listSessions, openJsonlSession } from "../session/factory.ts";
 import { Scheduler, type SchedulerConfig } from "../scheduler/index.ts";
 import { createPermissionStore } from "../tools/permission-store.ts";
-import { createStoredPermissionCallback, promptForPermission } from "./permission-prompt.ts";
+import { SLASH_COMMANDS } from "./commands.ts";
+import { createStoredPermissionCallback, type PermissionPrompt } from "./permission-prompt.ts";
 import { CliRenderer } from "./renderer.ts";
 import { type ReplHarness, runRepl } from "./repl.ts";
 
@@ -29,6 +30,8 @@ export interface CliOptions {
 	listSessions?: boolean;
 	resume?: string;
 	scheduler?: boolean;
+	classic?: boolean;
+	permissionPrompt?: PermissionPrompt;
 }
 
 export interface ParsedCliArgs {
@@ -116,6 +119,10 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
 			options.scheduler = true;
 			continue;
 		}
+		if (arg === "--classic") {
+			options.classic = true;
+			continue;
+		}
 		if (arg.startsWith("--resume=")) {
 			options.resume = arg.slice("--resume=".length);
 			continue;
@@ -180,11 +187,12 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
 }
 
 export function formatCliHelp(): string {
+	const commandSummary = SLASH_COMMANDS.map((command) => `/${command.name}`).join(" ");
 	return [
-		"usage: pi-harness [--agent name] [--scheduler] [--cwd path] [--provider name] [--model id] [--api-key key] [--continue|--resume id|--list-sessions] [prompt...]",
+		"usage: pi-harness [--agent name] [--scheduler] [--classic] [--cwd path] [--provider name] [--model id] [--api-key key] [--continue|--resume id|--list-sessions] [prompt...]",
 		"       pi-harness agents",
 		"",
-		"commands: /model /cost /cache /sessions /thinking /compact /quit",
+		`commands: ${commandSummary}`,
 	].join("\n");
 }
 
@@ -223,7 +231,7 @@ export async function createCliHarness(options: CliOptions): Promise<ReplHarness
 	const permissionStore = createPermissionStore({ cwd });
 	const configWithPermission: HarnessConfig = {
 		...config,
-		askPermission: createStoredPermissionCallback({ store: permissionStore }),
+		askPermission: createStoredPermissionCallback({ store: permissionStore, prompt: options.permissionPrompt }),
 	};
 	const sessionsForCwd = async (): Promise<readonly ReplSessionInfo[]> =>
 		await listSessions({ cwd, sessionsRoot: config.sessionsRoot ?? ".pi-harness/sessions" });
@@ -341,6 +349,20 @@ function lifecycleClarification(result: unknown): string | undefined {
 		: undefined;
 }
 
+export function shouldUseTui(
+	options: CliOptions,
+	env: NodeJS.ProcessEnv = process.env,
+	input: Pick<NodeJS.ReadStream, "isTTY"> = process.stdin,
+	output: Pick<NodeJS.WriteStream, "isTTY"> = process.stdout,
+): boolean {
+	return (
+		options.classic !== true &&
+		env.PI_HARNESS_TUI !== "0" &&
+		input.isTTY === true &&
+		output.isTTY === true
+	);
+}
+
 export async function runCli(
 	factory: CliHarnessFactory,
 	args: readonly string[] = processArgv.slice(2),
@@ -358,6 +380,18 @@ export async function runCli(
 		await printSessions(parsed.options);
 		return;
 	}
+	if (!parsed.prompt && shouldUseTui(parsed.options)) {
+		const { createTuiPermissionController, runTui } = await import("./tui/index.tsx");
+		const permissionController = createTuiPermissionController();
+		const harness = await factory({ ...parsed.options, permissionPrompt: permissionController.prompt });
+		try {
+			await runTui(harness, { permissionController });
+		} finally {
+			await harness.dispose?.();
+		}
+		return;
+	}
+
 	const harness = await factory(parsed.options);
 	try {
 		if (parsed.prompt) {

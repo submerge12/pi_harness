@@ -3,6 +3,7 @@
 		"target": "ES2024",
 		"module": "NodeNext",
 		"moduleResolution": "NodeNext",
+		"jsx": "react-jsx",
 		"strict": true,
 		"allowImportingTsExtensions": true,
 		"erasableSyntaxOnly": true,
@@ -10,5 +11,5 @@
 		"skipLibCheck": true,
 		"types": ["node", "vitest"]
 	},
-	"include": ["src/**/*.ts", "test/**/*.ts"]
+	"include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx"]
 }
