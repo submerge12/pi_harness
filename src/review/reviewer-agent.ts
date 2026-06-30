@@ -1,5 +1,6 @@
 import type { TaskContract } from "../contract/index.ts";
-import { getEvidenceCapturedOutput, type EvidenceManifestEntry } from "../evidence/index.ts";
+import type { EvidenceManifestEntry } from "../evidence/index.ts";
+import { crossCheckEvidence } from "./evidence-cross-check.ts";
 import { createReviewGate } from "./review-gate.ts";
 import { isReviewVerdict } from "./verdict.ts";
 import type { BlindReviewer, CrossChecker, ReviewGate, ReviewVerdict } from "./types.ts";
@@ -83,57 +84,12 @@ export function createSpawnedReviewerAgent(options: SpawnedReviewerAgentOptions)
 					},
 				},
 				crossChecker: {
-					crossCheck: async ({ blindVerdict, manifest }) => {
-						if (blindVerdict.verdict !== "PASS") return blindVerdict;
-						const entries = Array.isArray(manifest) ? manifest as EvidenceManifestEntry[] : [];
-						if (entries.length === 0) {
-							return failCrossCheck(blindVerdict, "Reviewer PASS lacks evidence manifest receipts.");
-						}
-						const failedReceipt = entries.find((entry) => entry.allowed.level !== "allow" || entry.exitCode !== 0);
-						if (failedReceipt) {
-							return failCrossCheck(blindVerdict, `Reviewer PASS includes unsuccessful receipt ${failedReceipt.id}.`);
-						}
-						const unsupportedCriterion = firstUnsupportedContainsCriterion(input, entries);
-						if (unsupportedCriterion) {
-							return failCrossCheck(blindVerdict, `Reviewer PASS lacks evidence for acceptance criterion: ${unsupportedCriterion}`);
-						}
-						return blindVerdict;
-					},
+					crossCheck: async (crossCheckInput) => crossCheckEvidence(crossCheckInput),
 				},
 			});
 			return await createGateReviewerAgent(gate).review(input);
 		},
 	};
-}
-
-function failCrossCheck(blindVerdict: ReviewVerdict, claim: string): ReviewVerdict {
-	return {
-		verdict: "FAIL",
-		reviewer: blindVerdict.reviewer,
-		phase: "cross-check",
-		findings: [{ severity: "blocker", claim }],
-		decidedAt: blindVerdict.decidedAt,
-	};
-}
-
-function firstUnsupportedContainsCriterion(
-	input: ReviewerInput,
-	entries: readonly EvidenceManifestEntry[],
-): string | undefined {
-	const corpus = [
-		input.diff,
-		JSON.stringify(entries),
-		...entries.flatMap((entry) => {
-			const output = getEvidenceCapturedOutput(entry);
-			return output ? [output.stdout, output.stderr] : [];
-		}),
-	].join("\n").toLowerCase();
-
-	for (const criterion of input.acceptanceCriteria) {
-		const required = /\bcontains\s+([A-Za-z0-9._-]+)/i.exec(criterion)?.[1];
-		if (required && !corpus.includes(required.toLowerCase())) return criterion;
-	}
-	return undefined;
 }
 
 function readonlyReviewContract(input: ReviewerInput): TaskContract {
@@ -157,16 +113,13 @@ function readonlyReviewContract(input: ReviewerInput): TaskContract {
 function reviewerPrompt(input: ReviewerInput): string {
 	return [
 		"You are an adversarial blind reviewer.",
-		"Assume the Worker is wrong. Verify each claim step by step against evidence.",
+		"Assume the Worker is wrong. Review only the diff and acceptance criteria; evidence is checked in a separate phase.",
 		"Respond with ONLY a JSON object (no prose, no code fence) matching exactly:",
-		'{"verdict":"PASS|FAIL|NEEDS_HUMAN|BLOCKED|SCOPE_GAP","reviewer":"<id>","phase":"blind|cross-check","findings":[{"severity":"info|warn|blocker","claim":"<text>","evidenceRef":"<optional>"}]}',
-		"Use PASS only when evidence proves every acceptance criterion; otherwise FAIL or NEEDS_HUMAN.",
+		'{"verdict":"PASS|FAIL|NEEDS_HUMAN|BLOCKED|SCOPE_GAP","reviewer":"<id>","phase":"blind","findings":[{"severity":"info|warn|blocker","claim":"<text>","evidenceRef":"<optional>"}]}',
+		"Use PASS only when the diff appears to satisfy every acceptance criterion; otherwise FAIL or NEEDS_HUMAN.",
 		"",
 		"Diff:",
 		input.diff,
-		"",
-		"Evidence manifest:",
-		JSON.stringify(input.evidenceManifest, null, 2),
 		"",
 		"Acceptance criteria:",
 		input.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n"),
@@ -176,7 +129,7 @@ function reviewerPrompt(input: ReviewerInput): string {
 function parseReviewerVerdict(text: string, decidedAt: number): ReviewVerdict {
 	const parsed = extractVerdictJson(text) ?? {};
 	const reviewer = typeof parsed.reviewer === "string" ? parsed.reviewer : "spawned-reviewer";
-	const phase: ReviewVerdict["phase"] = parsed.phase === "blind" ? "blind" : "cross-check";
+	const phase: ReviewVerdict["phase"] = "blind";
 	const findings = coerceFindings(parsed.findings);
 	const verdictValue = coerceVerdictValue(parsed.verdict);
 	if (!verdictValue) {

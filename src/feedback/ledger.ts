@@ -1,5 +1,5 @@
 import type { TaskContract } from "../contract/index.ts";
-import type { EvidenceManifestEntry } from "../evidence/index.ts";
+import { cloneEvidenceManifestEntry, type EvidenceManifestEntry } from "../evidence/index.ts";
 import { isPathWithinWriteScope, normalizeWriteScope } from "../execution/index.ts";
 
 export interface ReceiptLedgerAttempt {
@@ -34,15 +34,15 @@ export function createReceiptLedger(): ReceiptLedger {
 
 	return {
 		recordAttempt(attempt: number, receipts: readonly EvidenceManifestEntry[]): void {
-			byAttempt.set(attempt, receipts.map(cloneReceipt));
+			byAttempt.set(attempt, receipts.map(cloneEvidenceManifestEntry));
 		},
 		attempts(): readonly ReceiptLedgerAttempt[] {
 			return [...byAttempt.entries()]
 				.sort(([left], [right]) => left - right)
-				.map(([attempt, receipts]) => ({ attempt, receipts: receipts.map(cloneReceipt) }));
+				.map(([attempt, receipts]) => ({ attempt, receipts: receipts.map(cloneEvidenceManifestEntry) }));
 		},
 		successfulReceiptsForAttempt(attempt: number): readonly EvidenceManifestEntry[] {
-			return (byAttempt.get(attempt) ?? []).filter(isSuccessfulReceipt).map(cloneReceipt);
+			return (byAttempt.get(attempt) ?? []).filter(isSuccessfulReceipt).map(cloneEvidenceManifestEntry);
 		},
 		checkCompletion(input): CompletionGateResult {
 			if (!input.doneClaim) {
@@ -60,7 +60,7 @@ export function createReceiptLedger(): ReceiptLedger {
 				return failure(input.attempt, "done claim has no successful receipt covering the write scope");
 			}
 
-			return { ok: true, acceptedReceipts: acceptedReceipts.map(cloneReceipt) };
+			return { ok: true, acceptedReceipts: acceptedReceipts.map(cloneEvidenceManifestEntry) };
 		},
 	};
 }
@@ -81,14 +81,4 @@ function receiptCoversWriteScope(receipt: EvidenceManifestEntry, writeScope: rea
 	const normalizedScope = normalizeWriteScope(writeScope, { allowEmpty: true });
 	const paths = receipt.actualWritePaths?.length ? receipt.actualWritePaths : [receipt.subject];
 	return paths.some((path) => isPathWithinWriteScope(path, normalizedScope));
-}
-
-function cloneReceipt(receipt: EvidenceManifestEntry): EvidenceManifestEntry {
-	return {
-		...receipt,
-		allowed: { ...receipt.allowed },
-		bytes: { ...receipt.bytes },
-		...(receipt.writeScope ? { writeScope: [...receipt.writeScope] } : {}),
-		...(receipt.actualWritePaths ? { actualWritePaths: [...receipt.actualWritePaths] } : {}),
-	};
 }

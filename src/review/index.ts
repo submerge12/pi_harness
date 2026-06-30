@@ -1,4 +1,5 @@
 export { createReviewGate } from "./review-gate.ts";
+export { crossCheckEvidence } from "./evidence-cross-check.ts";
 export {
 	createGateReviewerAgent,
 	createReviewerAgent,

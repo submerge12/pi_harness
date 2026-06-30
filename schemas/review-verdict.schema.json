@@ -1,0 +1,106 @@
+{
+	"type": "object",
+	"required": [
+		"verdict",
+		"reviewer",
+		"phase",
+		"findings",
+		"decidedAt"
+	],
+	"properties": {
+		"verdict": {
+			"anyOf": [
+				{
+					"type": "string",
+					"const": "PASS"
+				},
+				{
+					"type": "string",
+					"const": "FAIL"
+				},
+				{
+					"type": "string",
+					"const": "NEEDS_HUMAN"
+				},
+				{
+					"type": "string",
+					"const": "BLOCKED"
+				},
+				{
+					"type": "string",
+					"const": "SCOPE_GAP"
+				}
+			]
+		},
+		"reviewer": {
+			"type": "string"
+		},
+		"phase": {
+			"anyOf": [
+				{
+					"type": "string",
+					"const": "blind"
+				},
+				{
+					"type": "string",
+					"const": "cross-check"
+				}
+			]
+		},
+		"findings": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"required": [
+					"severity",
+					"claim"
+				],
+				"properties": {
+					"severity": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "info"
+							},
+							{
+								"type": "string",
+								"const": "warn"
+							},
+							{
+								"type": "string",
+								"const": "blocker"
+							}
+						]
+					},
+					"claim": {
+						"type": "string"
+					},
+					"evidenceRef": {
+						"type": "string"
+					}
+				},
+				"additionalProperties": false
+			}
+		},
+		"rerun": {
+			"type": "object",
+			"required": [
+				"ran",
+				"matched"
+			],
+			"properties": {
+				"ran": {
+					"type": "boolean"
+				},
+				"matched": {
+					"type": "boolean"
+				}
+			},
+			"additionalProperties": false
+		},
+		"decidedAt": {
+			"type": "number"
+		}
+	},
+	"additionalProperties": false
+}

@@ -57,6 +57,24 @@ export function getEvidenceCapturedOutput(entry: EvidenceManifestEntry): Evidenc
 	return (entry as EntryWithCapturedOutput)[capturedOutputSymbol];
 }
 
+export function cloneEvidenceManifestEntry(entry: EvidenceManifestEntry): EvidenceManifestEntry {
+	const clone: EvidenceManifestEntry = {
+		...entry,
+		allowed: { ...entry.allowed },
+		bytes: { ...entry.bytes },
+		...(entry.writeScope ? { writeScope: [...entry.writeScope] } : {}),
+		...(entry.actualWritePaths ? { actualWritePaths: [...entry.actualWritePaths] } : {}),
+	};
+	const output = getEvidenceCapturedOutput(entry);
+	if (output) {
+		Object.defineProperty(clone, capturedOutputSymbol, {
+			value: output,
+			enumerable: false,
+		});
+	}
+	return clone;
+}
+
 async function persistEvidence(
 	options: EvidenceGatewayOptions,
 	input: CaptureCommandInput | CaptureOutputInput,

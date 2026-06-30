@@ -21,12 +21,14 @@ describe("emit-schemas", () => {
 		const skillSchemaText = readFileSync(join(outputDir, "skill-card.schema.json"), "utf8");
 		const memorySchemaText = readFileSync(join(outputDir, "user-memory.schema.json"), "utf8");
 		const traceSchemaText = readFileSync(join(outputDir, "trace-event.schema.json"), "utf8");
+		const reviewVerdictSchemaText = readFileSync(join(outputDir, "review-verdict.schema.json"), "utf8");
 
 		expect(taskSchemaText.endsWith("\n")).toBe(true);
 		expect(planSchemaText.endsWith("\n")).toBe(true);
 		expect(skillSchemaText.endsWith("\n")).toBe(true);
 		expect(memorySchemaText.endsWith("\n")).toBe(true);
 		expect(traceSchemaText.endsWith("\n")).toBe(true);
+		expect(reviewVerdictSchemaText.endsWith("\n")).toBe(true);
 		expect(JSON.parse(taskSchemaText)).toMatchObject({
 			type: "object",
 			required: ["id", "goal", "rawRequest", "hardConstraints", "assignedSkill", "writeScope", "gateTier"],
@@ -86,6 +88,27 @@ describe("emit-schemas", () => {
 						{ const: "worker-attempt", type: "string" },
 						{ const: "review-verdict", type: "string" },
 						{ const: "rewind", type: "string" },
+					]),
+				},
+			},
+		});
+		expect(JSON.parse(reviewVerdictSchemaText)).toMatchObject({
+			type: "object",
+			required: ["verdict", "reviewer", "phase", "findings", "decidedAt"],
+			properties: {
+				verdict: {
+					anyOf: expect.arrayContaining([
+						{ const: "PASS", type: "string" },
+						{ const: "FAIL", type: "string" },
+						{ const: "NEEDS_HUMAN", type: "string" },
+						{ const: "BLOCKED", type: "string" },
+						{ const: "SCOPE_GAP", type: "string" },
+					]),
+				},
+				phase: {
+					anyOf: expect.arrayContaining([
+						{ const: "blind", type: "string" },
+						{ const: "cross-check", type: "string" },
 					]),
 				},
 			},

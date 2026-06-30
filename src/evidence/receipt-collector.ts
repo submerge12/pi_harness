@@ -1,4 +1,5 @@
 import type { EvidenceGateway, EvidenceManifestEntry } from "./types.ts";
+import { cloneEvidenceManifestEntry } from "./gateway.ts";
 
 export interface EvidenceReceiptCollector {
 	record(entry: EvidenceManifestEntry): void;
@@ -13,7 +14,7 @@ export function createEvidenceReceiptCollector(): EvidenceReceiptCollector {
 
 	return {
 		record(entry: EvidenceManifestEntry): void {
-			entries.push(cloneEntry(entry));
+			entries.push(cloneEvidenceManifestEntry(entry));
 		},
 		markAttemptStart(attempt: number): void {
 			attemptStartIndexes.set(attempt, entries.length);
@@ -21,10 +22,10 @@ export function createEvidenceReceiptCollector(): EvidenceReceiptCollector {
 		receiptsForAttempt(attempt: number): readonly EvidenceManifestEntry[] {
 			const start = attemptStartIndexes.get(attempt);
 			if (start === undefined) return [];
-			return entries.slice(start).map(cloneEntry);
+			return entries.slice(start).map(cloneEvidenceManifestEntry);
 		},
 		entries(): readonly EvidenceManifestEntry[] {
-			return entries.map(cloneEntry);
+			return entries.map(cloneEvidenceManifestEntry);
 		},
 	};
 }
@@ -45,15 +46,5 @@ export function recordEvidenceGatewayEntries(
 			collector.record(entry);
 			return entry;
 		},
-	};
-}
-
-function cloneEntry(entry: EvidenceManifestEntry): EvidenceManifestEntry {
-	return {
-		...entry,
-		allowed: { ...entry.allowed },
-		bytes: { ...entry.bytes },
-		...(entry.writeScope ? { writeScope: [...entry.writeScope] } : {}),
-		...(entry.actualWritePaths ? { actualWritePaths: [...entry.actualWritePaths] } : {}),
 	};
 }
