@@ -96,6 +96,72 @@ describe("createPiRuntimeAdapter", () => {
 		expect(Value.Check(normalizedResultSchema, result)).toBe(true);
 	});
 
+	it("emits the executing ModelProfile id as the optional model field", async () => {
+		const assignment: WorkerAssignment = {
+			id: "assign-model",
+			goal: "Write the result",
+			rawRequest: "write result",
+			assignedSkill: "coding",
+			writeScope: ["src"],
+			gateTier: "G1",
+			hardConstraints: [{ kind: "acceptance", value: "result exists", source: "test" }],
+		};
+		const adapter = createPiRuntimeAdapter({
+			getConfig: () => ({
+				activeToolNames: ["read", "write"],
+				thinkingLevel: "off",
+				provider: "deepseek",
+				modelId: "deepseek-v4-pro",
+			}),
+			runRequest: async () => ({
+				entryStage: "execute",
+				message: assistantMessage("worker complete"),
+				evidenceRefs: [],
+				stageTrace: [],
+				recalledMemories: [],
+				writtenMemories: [],
+			}),
+		});
+
+		const result = await adapter.run(assignment);
+
+		expect(result.model).toBe("deepseek-v4-pro@2026-06");
+		expect(Value.Check(normalizedResultSchema, result)).toBe(true);
+	});
+
+	it("falls back to provider/modelId when no profile is registered for the model", async () => {
+		const assignment: WorkerAssignment = {
+			id: "assign-unprofiled",
+			goal: "Write the result",
+			rawRequest: "write result",
+			assignedSkill: "coding",
+			writeScope: ["src"],
+			gateTier: "G1",
+			hardConstraints: [{ kind: "acceptance", value: "result exists", source: "test" }],
+		};
+		const adapter = createPiRuntimeAdapter({
+			getConfig: () => ({
+				activeToolNames: ["read"],
+				thinkingLevel: "off",
+				provider: "openai",
+				modelId: "gpt-x",
+			}),
+			runRequest: async () => ({
+				entryStage: "execute",
+				message: assistantMessage("worker complete"),
+				evidenceRefs: [],
+				stageTrace: [],
+				recalledMemories: [],
+				writtenMemories: [],
+			}),
+		});
+
+		const result = await adapter.run(assignment);
+
+		expect(result.model).toBe("openai/gpt-x");
+		expect(Value.Check(normalizedResultSchema, result)).toBe(true);
+	});
+
 	it("maps run evidence refs and failing review verdicts into the normalized result", async () => {
 		const assignment: WorkerAssignment = {
 			id: "assign-fail",

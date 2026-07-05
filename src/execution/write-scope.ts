@@ -66,7 +66,12 @@ export function isPathWithinWriteScope(subjectPath: string, writeScope: WriteSco
 
 export function normalizeWriteScopePath(scopePath: string): string {
 	const slashNormalized = scopePath.replaceAll("\\", "/").trim();
-	if (/^[A-Za-z]:($|\/)/.test(slashNormalized) || slashNormalized.includes(":")) {
+	if (/^[A-Za-z]:($|\/)/.test(slashNormalized)) {
+		throw new Error(`write scope path must be relative and colon-free: ${scopePath}`);
+	}
+	const virtualUri = normalizeVirtualWriteScopeUri(slashNormalized);
+	if (virtualUri) return virtualUri;
+	if (slashNormalized.includes(":")) {
 		throw new Error(`write scope path must be relative and colon-free: ${scopePath}`);
 	}
 	const normalized = path.posix.normalize(slashNormalized);
@@ -74,6 +79,19 @@ export function normalizeWriteScopePath(scopePath: string): string {
 	if (normalized.startsWith("../") || normalized === "..") throw new Error(`write scope path must not escape root: ${scopePath}`);
 	if (path.posix.isAbsolute(normalized)) throw new Error(`write scope path must be relative: ${scopePath}`);
 	return normalized;
+}
+
+function normalizeVirtualWriteScopeUri(scopePath: string): string | undefined {
+	const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]+)(\/[^?#]*)?$/.exec(scopePath);
+	if (!match) return undefined;
+	const [, scheme, authority, rawPath = ""] = match;
+	const segments = rawPath.split("/");
+	if (segments.some((segment) => segment === "..")) {
+		throw new Error(`write scope path must not escape root: ${scopePath}`);
+	}
+	const normalizedPath = path.posix.normalize(rawPath || "/");
+	const pathSuffix = normalizedPath === "/" ? "" : normalizedPath;
+	return `${scheme}://${authority}${pathSuffix}`;
 }
 
 function compareOwnedScope(left: OwnedWriteScope, right: OwnedWriteScope): number {

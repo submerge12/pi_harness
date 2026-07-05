@@ -6,7 +6,8 @@
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"bin": {
-		"pi-harness": "./dist/cli/index.js"
+		"pi-harness": "./dist/cli/index.js",
+		"pi-harness-adapter-run": "./dist/adapter-run.js"
 	},
 	"exports": {
 		".": {

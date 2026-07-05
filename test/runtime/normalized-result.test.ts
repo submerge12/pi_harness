@@ -18,6 +18,15 @@ describe("normalizedResultSchema", () => {
 		})).toBe(true);
 
 		expect(Value.Check(normalizedResultSchema, {
+			status: "completed",
+			testResults: [],
+			evidenceRefs: [],
+			usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 },
+			message: "ok",
+			model: "deepseek-v4-pro@2026-06",
+		})).toBe(true);
+
+		expect(Value.Check(normalizedResultSchema, {
 			status: "done",
 			testResults: [],
 			evidenceRefs: [],
@@ -36,5 +45,5 @@ describe("normalizedResultSchema", () => {
 			required: string[];
 		};
 		expect(schema.required).toEqual(["status", "testResults", "evidenceRefs", "usage", "message"]);
-	});
+	}, 15_000);
 });

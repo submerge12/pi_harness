@@ -2,6 +2,7 @@ import type { TaskContract } from "../contract/index.ts";
 import type { CheckpointStore } from "../checkpoint/index.ts";
 import type { EvidenceManifestEntry } from "../evidence/index.ts";
 import type { CompletionGateFailure, ReceiptLedger } from "../feedback/ledger.ts";
+import { buildFailureDigest } from "../feedback/verdict-digest.ts";
 import type { BudgetDecision } from "../observability/budget.ts";
 import type { RunPolicy } from "../policy/index.ts";
 import type { ReviewVerdict, ReviewerInput } from "../review/index.ts";
@@ -199,7 +200,7 @@ export async function runWorkerReviewerLoop(
 			}
 			state = await rewindAttempt(options, state, attempt);
 			rewinds += 1;
-			failureDigest = completion.failure.reason;
+			failureDigest = buildFailureDigest({ verdicts: reviewVerdicts, completionGateFailures });
 			continue;
 		}
 
@@ -239,7 +240,7 @@ export async function runWorkerReviewerLoop(
 				}
 				state = await rewindAttempt(options, state, attempt);
 				rewinds += 1;
-				failureDigest = failureDigestFromVerdict(verdict);
+				failureDigest = buildFailureDigest({ verdicts: reviewVerdicts, completionGateFailures });
 				continue;
 			}
 			state = await recordTransition(options.trace, state, "NEEDS_HUMAN");
@@ -273,7 +274,7 @@ export async function runWorkerReviewerLoop(
 		}
 		state = await rewindAttempt(options, state, attempt);
 		rewinds += 1;
-		failureDigest = failureDigestFromVerdict(verdict);
+		failureDigest = buildFailureDigest({ verdicts: reviewVerdicts, completionGateFailures });
 	}
 
 	if (state !== "NEEDS_HUMAN") state = await recordTransition(options.trace, state, "NEEDS_HUMAN");
@@ -421,7 +422,3 @@ function workerTraceData(attempt: number, result: WorkerAttemptResult): Record<s
 	};
 }
 
-function failureDigestFromVerdict(verdict: ReviewVerdict): string {
-	const claims = verdict.findings.map((finding) => finding.claim).filter(Boolean);
-	return claims.length > 0 ? claims.join("; ") : `reviewer ${verdict.verdict}`;
-}

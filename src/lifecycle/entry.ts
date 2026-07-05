@@ -8,6 +8,7 @@ import {
 	writeUserMemory,
 	type UserMemoryRecord,
 } from "../memory/index.ts";
+import { DEFAULT_MODEL_PROFILE } from "../model-profiles/registry.ts";
 import { runWorkerReviewerLoop } from "../orchestration/index.ts";
 import { runRequestFrontPipeline, type RouteMatch } from "../routing/index.ts";
 import { matchSkillCards, lookupSkillCard, type SkillCard } from "../skills/index.ts";
@@ -220,9 +221,9 @@ function lifecycleAssistantMessage(text: string): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
-		api: "openai-completions",
-		provider: "deepseek",
-		model: "deepseek-v4-pro",
+		api: DEFAULT_MODEL_PROFILE.api,
+		provider: DEFAULT_MODEL_PROFILE.provider,
+		model: DEFAULT_MODEL_PROFILE.modelId,
 		usage: {
 			input: 0,
 			output: 0,
@@ -363,7 +364,15 @@ async function executeTaskContractWithReceipts(
 	const receiptCollector = deps.workerReviewerLoop?.receiptCollector;
 	receiptCollector?.markAttemptStart(0);
 	const message = await executeTaskContract(harness, taskContract);
-	const receipts = receiptCollector?.receiptsForAttempt(0) ?? [];
+	let receipts = receiptCollector?.receiptsForAttempt(0) ?? [];
+	if (receipts.length === 0) {
+		const captured = await deps.workerReviewerLoop?.captureTaskAttemptEvidence?.({
+			attempt: 0,
+			taskContract,
+			message,
+		});
+		if (captured) receipts = [captured];
+	}
 	return {
 		message,
 		evidenceRefs: evidenceRefsFromReceipts(receipts),

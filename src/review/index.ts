@@ -15,6 +15,10 @@ export {
 	reviewVerdictValueSchema,
 } from "./verdict.ts";
 export type {
+	ReviewFinding,
+	ReviewFindingSeverity,
+} from "./verdict.ts";
+export type {
 	BlindReviewer,
 	Clock,
 	CrossChecker,

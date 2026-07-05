@@ -1,4 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { findModelProfileForModel } from "../model-profiles/registry.ts";
 import type { ProviderCacheProfile } from "./types.ts";
 
 function hasAnthropicCacheControlFormat(model: Model<Api>): boolean {
@@ -12,10 +13,6 @@ function supportsLongCacheRetention(model: Model<Api>, defaultValue: boolean): b
 		return compat.supportsLongCacheRetention;
 	}
 	return defaultValue;
-}
-
-function isDeepSeekModel(model: Model<Api>): boolean {
-	return model.provider === "deepseek" || model.baseUrl.includes("deepseek.com");
 }
 
 function isAnthropicBreakpointModel(model: Model<Api>): boolean {
@@ -34,12 +31,14 @@ function isOpenAISessionAffinityModel(model: Model<Api>): boolean {
 }
 
 export function getProviderCacheProfile(model: Model<Api>): ProviderCacheProfile {
-	if (isDeepSeekModel(model)) {
-		return {
-			strategy: "automatic-prefix",
-			supportsLongCacheRetention: false,
-		};
-	}
+	// Model-specific cache behavior is declared on the ModelProfile seam; the
+	// remaining branches below are API-shape heuristics, not model knowledge.
+	const declaredProfile = findModelProfileForModel({
+		provider: model.provider,
+		modelId: model.id,
+		baseUrl: model.baseUrl,
+	});
+	if (declaredProfile?.cache) return { ...declaredProfile.cache };
 
 	if (isAnthropicBreakpointModel(model)) {
 		return {

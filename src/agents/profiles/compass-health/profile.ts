@@ -5,7 +5,7 @@ import { createCompassHealthToolRegistrations, getToolContext, setToolContext } 
 
 export { createCompassHealthToolRegistrations } from "./tools.ts";
 
-export const compassHealthProfile: AgentProfile = {
+const compassHealthProfileAdapter = {
 	name: compassHealthProfileSpec.name,
 	description: compassHealthProfileSpec.description,
 	systemPrompt: compassHealthProfileSpec.systemPrompt,
@@ -14,7 +14,7 @@ export const compassHealthProfile: AgentProfile = {
 	policy: compassHealthProfileSpec.policy,
 	context: compassHealthProfileSpec.context,
 	scheduledTasks: compassHealthProfileSpec.scheduledTasks,
-	tools: [() => createCompassHealthToolRegistrations()],
+	tools: [(context) => createCompassHealthToolRegistrations(context)],
 	proactiveCheck: async (): Promise<string> => {
 		const ctx = getToolContext();
 		if (!ctx) return "Compass Health agent not initialized.";
@@ -29,6 +29,8 @@ export const compassHealthProfile: AgentProfile = {
 	},
 	skills: [],
 	templates: [],
-};
+} satisfies AgentProfile;
+
+export const compassHealthProfile = compassHealthProfileAdapter as AgentProfile;
 
 export default compassHealthProfile;

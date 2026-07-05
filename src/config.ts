@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { KnownProvider } from "@earendil-works/pi-ai";
 import type { CacheStrategyEngineOptions } from "./cache/types.ts";
+import { DEFAULT_MODEL_PROFILE } from "./model-profiles/registry.ts";
 import type { CompactionPolicyConfig } from "./context/compaction-policy.ts";
 import { resolvePruningConfig, type PruningConfig, type ResolvedPruningConfig } from "./context/prune-executor.ts";
 import type { TokenBudgetRatios } from "./context/token-budget.ts";
@@ -25,10 +26,10 @@ import type {
 	ToolAccessLevel,
 } from "./tools/types.ts";
 
-export const DEFAULT_PROVIDER = "deepseek" satisfies KnownProvider;
-export const DEFAULT_MODEL_ID = "deepseek-v4-pro";
+export const DEFAULT_PROVIDER: KnownProvider = DEFAULT_MODEL_PROFILE.provider;
+export const DEFAULT_MODEL_ID: string = DEFAULT_MODEL_PROFILE.modelId;
 export const DEFAULT_SESSIONS_ROOT = ".pi-harness/sessions";
-export const DEFAULT_THINKING_LEVEL = "off" satisfies ThinkingLevel;
+export const DEFAULT_THINKING_LEVEL: ThinkingLevel = DEFAULT_MODEL_PROFILE.promptDialect.thinkingLevel ?? "off";
 export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
 	defaults: {
 		"read-only": "allow",

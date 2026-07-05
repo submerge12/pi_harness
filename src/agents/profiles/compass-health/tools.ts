@@ -2,9 +2,34 @@ import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 // Static is used implicitly via TypeBox parameter inference
 import type { ToolRegistration } from "../../../tools/types.ts";
+import type { AgentToolFactoryContext } from "../../profile.ts";
 
 import type { ToolContext } from "compass-health-agent/tools/context";
 import * as handlers from "compass-health-agent/tools/handlers";
+
+const COMPASS_HEALTH_DB_SCOPE = "compass-health-agent://database/compass_health";
+
+const WRITE_EFFECTS = {
+	set_profile: writeEffect("bmr_profiles"),
+	log_meal: writeEffect("diet_logs"),
+	log_water: writeEffect("water_logs"),
+	log_exercise: writeEffect("exercise_logs"),
+	log_weight: writeEffect("physical_conditions"),
+	meal_checkin: writeEffect("meal_plan_entries"),
+	update_cooking_record: writeEffect("cooking_records"),
+	generate_meal_plan: writeEffect("meal_plan_entries"),
+	remember: writeEffect("memory_records"),
+	save_dish: writeEffect("user_dishes"),
+} as const;
+
+type WriteToolName = keyof typeof WRITE_EFFECTS;
+
+function writeEffect(table: string): { table: string; path: string } {
+	return {
+		table,
+		path: `${COMPASS_HEALTH_DB_SCOPE}/${table}`,
+	};
+}
 
 // ── Shared context (set by install hook, used by execute closures) ──
 
@@ -30,6 +55,72 @@ function jsonResult<T>(result: T): AgentToolResult<T> {
 		content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
 		details: result,
 	};
+}
+
+async function executeWriteTool<T>(
+	factoryContext: AgentToolFactoryContext | undefined,
+	toolCallId: string,
+	toolName: WriteToolName,
+	handler: () => Promise<T>,
+): Promise<AgentToolResult<T>> {
+	const result = await handler();
+	if (shouldCaptureDomainWriteReceipt(toolName, result)) {
+		await captureDomainWriteReceipt(factoryContext, toolCallId, toolName, result);
+	}
+	return jsonResult(result);
+}
+
+function shouldCaptureDomainWriteReceipt(toolName: WriteToolName, result: unknown): boolean {
+	if (toolName === "remember") {
+		return hasObjectProperty(result, "memory");
+	}
+	return true;
+}
+
+async function captureDomainWriteReceipt<T>(
+	factoryContext: AgentToolFactoryContext | undefined,
+	toolCallId: string,
+	toolName: WriteToolName,
+	result: T,
+): Promise<void> {
+	const evidenceGateway = factoryContext?.evidenceGateway;
+	if (!evidenceGateway) return;
+
+	const effect = WRITE_EFFECTS[toolName];
+	const decision = factoryContext.getPermissionDecision?.(toolCallId);
+	await evidenceGateway.captureOutput({
+		id: `compass-health-${toolName}-${safeEvidenceId(toolCallId)}`,
+		command: `compass-health domain write: ${toolName}`,
+		subject: effect.path,
+		allowed: {
+			level: "allow",
+			ruleId: decision?.allowed.ruleId ?? "compass-health-domain-write",
+		},
+		writeScope: decision?.writeScope ?? [effect.path],
+		actualWritePaths: [effect.path],
+		stdout: JSON.stringify({
+			schema: "pi-harness.compass-health-domain-write.v1",
+			toolName,
+			table: effect.table,
+			effect: "database-write",
+			resultShape: resultShape(result),
+		}),
+		stderr: "",
+		exitCode: 0,
+	});
+}
+
+function safeEvidenceId(value: string): string {
+	return value.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "tool-call";
+}
+
+function resultShape(value: unknown): string[] {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+	return Object.keys(value as Record<string, unknown>).sort();
+}
+
+function hasObjectProperty(value: unknown, key: string): boolean {
+	return typeof value === "object" && value !== null && Object.prototype.hasOwnProperty.call(value, key);
 }
 
 // ── Parameter schemas ──
@@ -168,7 +259,7 @@ const dishDraftParams = Type.Object({
 	sideKind: Type.Optional(sideKind),
 	selfContained: Type.Optional(Type.Boolean()),
 	ingredients: Type.Array(dishDraftIngredientParams),
-	seasonings: Type.Array(Type.String()),
+	seasonings: Type.Optional(Type.Array(Type.String())),
 	method: Type.Optional(Type.String()),
 	source: dishSource,
 	notes: Type.Optional(Type.String()),
@@ -212,7 +303,9 @@ const saveDishParams = Type.Object({
 
 // ── Tool registrations ──
 
-export function createCompassHealthToolRegistrations(): ToolRegistration<any, any>[] {
+export function createCompassHealthToolRegistrations(
+	factoryContext?: AgentToolFactoryContext,
+): ToolRegistration<any, any>[] {
 	return [
 		// ── Write tools ──
 		{
@@ -221,8 +314,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Set Profile",
 				description: "Set or update the user's physical profile and compute calorie/macro targets. goal must be a canonical value; for fat loss or muscle gain choose a slow/moderate/fast tier (e.g. fat_loss_moderate).",
 				parameters: setProfileParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleSetProfile(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "set_profile", async () =>
+						await handlers.handleSetProfile(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",
@@ -233,8 +327,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Log Meal",
 				description: "Log a meal and estimate its nutrition from a food description.",
 				parameters: logMealParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleLogMeal(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "log_meal", async () =>
+						await handlers.handleLogMeal(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",
@@ -245,8 +340,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Log Water",
 				description: "Log water intake. Understands ml, cups, and Chinese units (杯).",
 				parameters: logWaterParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleLogWater(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "log_water", async () =>
+						await handlers.handleLogWater(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",
@@ -257,8 +353,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Log Exercise",
 				description: "Log exercise activity. Parses activity type and duration from description.",
 				parameters: logExerciseParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleLogExercise(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "log_exercise", async () =>
+						await handlers.handleLogExercise(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",
@@ -269,8 +366,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Log Weight",
 				description: "Log body weight. Parses kg from description.",
 				parameters: logWeightParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleLogWeight(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "log_weight", async () =>
+						await handlers.handleLogWeight(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",
@@ -281,8 +379,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Meal Check-in",
 				description: "Record whether a planned meal was followed, substituted, or skipped.",
 				parameters: mealCheckinParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleMealCheckin(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "meal_checkin", async () =>
+						await handlers.handleMealCheckin(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",
@@ -293,8 +392,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Cooking Record",
 				description: "Save or update a cooking record from a free-text note.",
 				parameters: updateCookingRecordParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleUpdateCookingRecord(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "update_cooking_record", async () =>
+						await handlers.handleUpdateCookingRecord(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",
@@ -306,8 +406,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Meal Plan",
 				description: "Generate a 7-day meal plan using preset dishes and the user's calorie targets.",
 				parameters: generateMealPlanParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleSmartGenerateMealPlan(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "generate_meal_plan", async () =>
+						await handlers.handleSmartGenerateMealPlan(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",
@@ -318,8 +419,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Remember",
 				description: "Store a durable user preference, dislike, routine, or note.",
 				parameters: rememberParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleRemember(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "remember", async () =>
+						await handlers.handleRemember(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",
@@ -330,8 +432,9 @@ export function createCompassHealthToolRegistrations(): ToolRegistration<any, an
 				label: "Save Dish",
 				description: "Persist an approved user dish so it becomes a meal-plan candidate.",
 				parameters: saveDishParams,
-				async execute(_toolCallId, params: any) {
-					return jsonResult(await handlers.handleSaveDish(requireCtx(), params));
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "save_dish", async () =>
+						await handlers.handleSaveDish(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",

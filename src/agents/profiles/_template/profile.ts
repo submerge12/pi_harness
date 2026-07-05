@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL_PROFILE } from "../../../model-profiles/registry.ts";
 import type { AgentProfile } from "../../profile.ts";
 import { systemPrompt } from "./prompt.ts";
 
@@ -15,8 +16,8 @@ export const profile = {
 		},
 	},
 	model: {
-		provider: "deepseek",
-		modelId: "deepseek-v4-pro",
+		provider: DEFAULT_MODEL_PROFILE.provider,
+		modelId: DEFAULT_MODEL_PROFILE.modelId,
 	},
 	thinkingLevel: "medium",
 	context: {

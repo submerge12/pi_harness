@@ -34,8 +34,16 @@ describe("write-scope guard", () => {
 		expect(isPathWithinWriteScope("./src/tools/../policy/decide.ts", ["src/policy"])).toBe(true);
 	});
 
+	it("checks virtual database URI containment with path segment boundaries", () => {
+		const dietLogs = "compass-health-agent://database/compass_health/diet_logs";
+
+		expect(normalizeWriteScope([dietLogs])).toEqual([dietLogs]);
+		expect(isPathWithinWriteScope(`${dietLogs}/row`, [dietLogs])).toBe(true);
+		expect(isPathWithinWriteScope("compass-health-agent://database/compass_health/water_logs", [dietLogs])).toBe(false);
+	});
+
 	it("rejects Windows absolute and colon-bearing paths after slash normalization", () => {
-		for (const scopePath of ["C:\\repo\\src", "C:/repo/src", "src:execution"]) {
+		for (const scopePath of ["C:\\repo\\src", "C:/repo/src", "src:execution", "compass-health-agent:database"]) {
 			expect(() => validateWriteScope([scopePath])).toThrow("write scope path must be relative and colon-free");
 		}
 	});

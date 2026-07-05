@@ -26,6 +26,8 @@ export interface PiRuntimeHarness {
 		useDefaultTools?: boolean;
 		contextWindow?: number;
 		thinkingLevel?: string;
+		provider?: string;
+		modelId?: string;
 	};
 	runRequest(input: AgentRequestInput): Promise<AgentRequestResult>;
 }

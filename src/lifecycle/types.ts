@@ -63,6 +63,11 @@ export interface RequestWorkerReviewerLoopOptions {
 		taskContract: TaskContract;
 		message: AssistantMessage;
 	}) => readonly EvidenceManifestEntry[];
+	captureTaskAttemptEvidence?: (input: {
+		attempt: number;
+		taskContract: TaskContract;
+		message: AssistantMessage;
+	}) => Promise<EvidenceManifestEntry | undefined> | EvidenceManifestEntry | undefined;
 	receiptCollector?: EvidenceReceiptCollector;
 	diffSource?: (input: {
 		attempt: number;

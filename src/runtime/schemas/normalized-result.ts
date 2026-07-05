@@ -30,6 +30,8 @@ export const normalizedResultSchema = Type.Object(
 		evidenceRefs: Type.Array(Type.String()),
 		usage: normalizedUsageSchema,
 		message: Type.String(),
+		// Additive, optional: the ModelProfile id that executed, for per-(executor, model) attribution.
+		model: Type.Optional(Type.String()),
 	},
 	{ additionalProperties: false },
 );

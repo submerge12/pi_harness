@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -29,9 +31,22 @@ const mocks = vi.hoisted(() => {
 		ctx,
 		spec,
 		createToolContextFromEnv: vi.fn(async () => ctx),
-		handleProactiveCheck: vi.fn(async () => ({ message: "delegated proactive message" })),
+		handleProactiveCheck: vi.fn(async () => ({
+			message: "\u{1F9CA} Thaw reminder: delegated localized thaw message",
+		})),
 		handleGetProfile: vi.fn(async (): Promise<{ profile: { targetKcal: number } | null }> => ({
 			profile: { targetKcal: 1800 },
+		})),
+		handleLogMeal: vi.fn(async () => ({
+			log: { id: "diet-log-1", mealType: "lunch" },
+			nutrition: { kcal: 330, proteinGrams: 62 },
+		})),
+		handleRemember: vi.fn(async (): Promise<any> => ({
+			status: "remembered" as const,
+			memory: { id: "memory-1", kind: "preference", subject: "breakfast" },
+		})),
+		handleRecall: vi.fn(async () => ({
+			memories: [{ id: "memory-1", kind: "preference", subject: "breakfast" }],
 		})),
 	};
 });
@@ -43,6 +58,9 @@ vi.mock("compass-health-agent", () => ({
 
 vi.mock("compass-health-agent/tools/handlers", () => ({
 	handleGetProfile: mocks.handleGetProfile,
+	handleLogMeal: mocks.handleLogMeal,
+	handleRemember: mocks.handleRemember,
+	handleRecall: mocks.handleRecall,
 	handleProactiveCheck: mocks.handleProactiveCheck,
 }));
 
@@ -73,7 +91,9 @@ describe("compass health profile adapter", () => {
 		expect(mocks.createToolContextFromEnv).toHaveBeenCalledTimes(1);
 		expect(getToolContext()).toBe(mocks.ctx);
 
-		await expect(compassHealthProfile.proactiveCheck(fakeContext)).resolves.toBe("delegated proactive message");
+		await expect(compassHealthProfile.proactiveCheck(fakeContext)).resolves.toBe(
+			"\u{1F9CA} Thaw reminder: delegated localized thaw message",
+		);
 		expect(mocks.handleProactiveCheck).toHaveBeenCalledWith(mocks.ctx);
 
 		await dispose?.();
@@ -90,6 +110,139 @@ describe("compass health profile adapter", () => {
 			name: "compass-health",
 			description: mocks.spec.description,
 		});
+	});
+
+	it("keeps the profile as a thin source-of-truth adapter", () => {
+		const profilePath = join(process.cwd(), "src/agents/profiles/compass-health/profile.ts");
+		const promptPath = join(process.cwd(), "src/agents/profiles", "compass-health", "prompt.ts");
+		const source = readFileSync(profilePath, "utf8");
+		const duplicatedMeatConstant = ["MEAT", "SLUGS"].join("_");
+		const duplicatedMeatFinder = ["findMeat", "Ingredients"].join("");
+		const promptImportPattern = `from ["']\\.${"/"}prompt`;
+
+		expect(source).toContain("compassHealthProfileSpec");
+		expect(source).toContain("createToolContextFromEnv");
+		expect(source).toContain("handlers.handleProactiveCheck");
+		expect(source).toContain("satisfies AgentProfile");
+		expect(source).not.toContain("compassHealthProfile: AgentProfile");
+		expect(source).not.toMatch(new RegExp([
+			duplicatedMeatConstant,
+			duplicatedMeatFinder,
+			promptImportPattern,
+		].join("|")));
+		expect(existsSync(promptPath)).toBe(false);
+	});
+
+	it("records sanitized evidence receipts for successful compass-health domain writes", async () => {
+		const { createCompassHealthToolRegistrations, setToolContext } = await import(
+			"../../src/agents/profiles/compass-health/tools.ts"
+		);
+		const entries: any[] = [];
+		const evidenceGateway = {
+			captureOutput: vi.fn(async (input: any) => {
+				const entry = {
+					id: input.id,
+					command: input.command,
+					subject: input.subject,
+					allowed: input.allowed,
+					writeScope: input.writeScope,
+					actualWritePaths: input.actualWritePaths,
+					exitCode: input.exitCode ?? 0,
+					stdoutRef: ".evidence-local/test/stdout",
+					stderrRef: ".evidence-local/test/stderr",
+					bytes: { stdout: 0, stderr: 0, total: 0 },
+					binary: false,
+					truncated: false,
+					sha256: "sha256",
+					stderrSha256: "stderr-sha256",
+					redactions: 0,
+					capturedAt: "2026-07-01T00:00:00.000Z",
+					stdout: input.stdout,
+				};
+				entries.push(entry);
+				return entry;
+			}),
+			captureCommand: vi.fn(),
+		};
+		const writeScope = ["compass-health-agent://database/compass_health/diet_logs"];
+		const getPermissionDecision = vi.fn(() => ({
+			subject: "log_meal",
+			allowed: { level: "allow" as const, ruleId: "test-allow" },
+			writeScope,
+		}));
+		setToolContext(mocks.ctx as never);
+
+		const registrations = createCompassHealthToolRegistrations({
+			evidenceGateway,
+			getPermissionDecision,
+		} as never);
+		const logMeal = registrations.find((registration) => registration.tool.name === "log_meal");
+		if (!logMeal) throw new Error("expected log_meal tool registration");
+		const params = {
+			date: "2026-07-01",
+			mealType: "lunch",
+			description: "sensitive meal description should not be persisted",
+		};
+
+		await expect(logMeal.tool.execute("call-log-meal", params)).resolves.toMatchObject({
+			details: { log: { id: "diet-log-1" } },
+		});
+
+		expect(mocks.handleLogMeal).toHaveBeenCalledWith(mocks.ctx, params);
+		expect(evidenceGateway.captureOutput).toHaveBeenCalledTimes(1);
+		expect(entries[0]).toMatchObject({
+			command: "compass-health domain write: log_meal",
+			subject: "compass-health-agent://database/compass_health/diet_logs",
+			allowed: { level: "allow", ruleId: "test-allow" },
+			writeScope,
+			actualWritePaths: ["compass-health-agent://database/compass_health/diet_logs"],
+			exitCode: 0,
+		});
+		expect(entries[0].stdout).toContain("\"toolName\":\"log_meal\"");
+		expect(entries[0].stdout).toContain("\"table\":\"diet_logs\"");
+		expect(entries[0].stdout).not.toContain(params.description);
+	});
+
+	it("does not record a memory write receipt when remember asks for confirmation", async () => {
+		const { createCompassHealthToolRegistrations, setToolContext } = await import(
+			"../../src/agents/profiles/compass-health/tools.ts"
+		);
+		const evidenceGateway = {
+			captureOutput: vi.fn(),
+			captureCommand: vi.fn(),
+		};
+		mocks.handleRemember.mockResolvedValueOnce({
+			needsConfirmation: {
+				reason: "low-confidence-memory",
+				confidence: 0.4,
+			},
+		});
+		setToolContext(mocks.ctx as never);
+
+		const registrations = createCompassHealthToolRegistrations({
+			evidenceGateway,
+			getPermissionDecision: vi.fn(() => ({
+				subject: "remember",
+				allowed: { level: "allow" as const, ruleId: "test-allow" },
+				writeScope: ["compass-health-agent://database/compass_health/memory_records"],
+			})),
+		} as never);
+		const remember = registrations.find((registration) => registration.tool.name === "remember");
+		if (!remember) throw new Error("expected remember tool registration");
+		const params = {
+			kind: "preference",
+			subject: "breakfast",
+			content: "tentative preference should not be persisted",
+			sourceText: "Maybe I prefer savory breakfasts",
+			confidence: 0.4,
+		};
+
+		await expect(remember.tool.execute("call-remember-confirm", params)).resolves.toMatchObject({
+			details: { needsConfirmation: { reason: "low-confidence-memory" } },
+		});
+
+		expect(mocks.handleRemember).toHaveBeenCalledWith(mocks.ctx, params);
+		expect(evidenceGateway.captureOutput).not.toHaveBeenCalled();
 	});
 
 	it("constrains set_profile goal to canonical goal values", async () => {
@@ -158,6 +311,36 @@ describe("compass health profile adapter", () => {
 		expect(mocks.handleGetProfile).toHaveBeenNthCalledWith(1, mocks.ctx, {});
 		expect(mocks.handleGetProfile).toHaveBeenNthCalledWith(2, mocks.ctx, {});
 
+		const remember = registrations.find((registration) => registration.tool.name === "remember");
+		const recall = registrations.find((registration) => registration.tool.name === "recall");
+		const rememberParams = {
+			kind: "preference",
+			subject: "breakfast",
+			content: "prefers savory breakfasts",
+			sourceText: "I like savory breakfasts",
+			confidence: 0.9,
+		};
+		const recallParams = {
+			query: "breakfast preferences",
+			kinds: ["preference"],
+			limit: 3,
+		};
+
+		expect(remember?.accessLevel).toBe("write");
+		expect(recall?.accessLevel).toBe("read-only");
+		expect(remember?.tool.description).toContain("durable user preference");
+		expect(recall?.tool.description).toContain("Recall durable user preferences");
+		expect(Value.Check(remember?.tool.parameters as any, rememberParams)).toBe(true);
+		expect(Value.Check(recall?.tool.parameters as any, recallParams)).toBe(true);
+		await expect(remember?.tool.execute("call-3", rememberParams)).resolves.toMatchObject({
+			details: { status: "remembered" },
+		});
+		await expect(recall?.tool.execute("call-4", recallParams)).resolves.toMatchObject({
+			details: { memories: [{ id: "memory-1" }] },
+		});
+		expect(mocks.handleRemember).toHaveBeenCalledWith(mocks.ctx, rememberParams);
+		expect(mocks.handleRecall).toHaveBeenCalledWith(mocks.ctx, recallParams);
+
 		const proposeDish = registrations.find((registration) => registration.tool.name === "propose_dish");
 		const saveDish = registrations.find((registration) => registration.tool.name === "save_dish");
 		const proposeDishDraftSchema = (proposeDish?.tool.parameters as any).properties.draft;
@@ -174,7 +357,8 @@ describe("compass health profile adapter", () => {
 				type: "array",
 				items: { type: "string" },
 			});
-			expect(schema.required ?? []).toContain("seasonings");
 		}
+		expect(proposeDishDraftSchema.required ?? []).not.toContain("seasonings");
+		expect(saveDishSchema.required ?? []).toContain("seasonings");
 	});
 });

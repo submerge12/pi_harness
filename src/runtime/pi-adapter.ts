@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentRequestResult } from "../lifecycle/index.ts";
+import { findModelProfile } from "../model-profiles/registry.ts";
 import type { AgentRuntimeAdapter, ExecutorCapabilities, PiRuntimeHarness, WorkerAssignment } from "./types.ts";
 import type { NormalizedResult } from "./schemas/normalized-result.ts";
 
@@ -31,12 +32,22 @@ export function createPiRuntimeAdapter(harness: PiRuntimeHarness): AgentRuntimeA
 			}
 
 			const result = await harness.runRequest({ taskContract: assignment });
-			return normalizeAgentRequestResult(result);
+			const model = executedModelId(harness.getConfig());
+			return {
+				...normalizeAgentRequestResult(result),
+				...(model ? { model } : {}),
+			};
 		},
 	};
 }
 
 export const createAgentRuntimeAdapter = createPiRuntimeAdapter;
+
+function executedModelId(config: ReturnType<PiRuntimeHarness["getConfig"]>): string | undefined {
+	if (!config.provider || !config.modelId) return undefined;
+	const profile = findModelProfile({ provider: config.provider, modelId: config.modelId });
+	return profile?.id ?? `${config.provider}/${config.modelId}`;
+}
 
 function configuredToolNames(config: ReturnType<PiRuntimeHarness["getConfig"]>): readonly string[] | undefined {
 	if (config.activeToolNames) return [...config.activeToolNames];

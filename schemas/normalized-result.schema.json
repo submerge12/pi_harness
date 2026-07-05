@@ -74,6 +74,9 @@
 		},
 		"message": {
 			"type": "string"
+		},
+		"model": {
+			"type": "string"
 		}
 	},
 	"additionalProperties": false

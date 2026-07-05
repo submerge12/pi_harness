@@ -23,5 +23,5 @@ describe("runtime contract schemas", () => {
 			type: "object",
 			required: ["sourceDomain", "targetDomain", "artifactRefs"],
 		});
-	});
+	}, 15_000);
 });

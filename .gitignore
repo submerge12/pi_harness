@@ -11,6 +11,8 @@ dist/
 
 # Local documentation/planning notes
 docs/
+NEXT-STEPS.md
+status-report.jsonl
 
 # Local secrets
 .env

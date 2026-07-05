@@ -1,10 +1,11 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Type } from "typebox";
 import {
 	createAgent,
+	createPiRuntimeAdapter,
 	codingProfile,
 	resolveHarnessConfig,
 	type AgentProfile,
@@ -33,6 +34,26 @@ function evidenceReceipt(overrides: Partial<EvidenceManifestEntry> = {}): Eviden
 		redactions: 0,
 		capturedAt: "2026-06-24T00:00:00.000Z",
 		...overrides,
+	};
+}
+
+function assistantMessage(text: string) {
+	return {
+		role: "assistant" as const,
+		content: [{ type: "text" as const, text }],
+		api: "openai-completions" as const,
+		provider: "deepseek" as const,
+		model: "test-model",
+		usage: {
+			input: 11,
+			output: 7,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 18,
+			cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.003 },
+		},
+		stopReason: "stop" as const,
+		timestamp: 0,
 	};
 }
 
@@ -91,6 +112,62 @@ describe("default worker-reviewer loop boot", () => {
 
 		try {
 			expect(observed[0]?.evidenceGateway).toBeDefined();
+		} finally {
+			await harness.dispose();
+		}
+	});
+
+	it("creates sanitized evidence refs for read-only adapter TaskContracts without tool receipts", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-review-loop-readonly-evidence-"));
+		const rawRequestMarker = "raw request marker should not be persisted";
+		const assistantTextMarker = "assistant text marker should not be persisted";
+		const profile: AgentProfile = {
+			name: "readonly-bridge",
+			description: "readonly bridge profile",
+			systemPrompt: "Answer the test request.",
+			install: (harness) => {
+				(harness as { prompt: typeof harness.prompt }).prompt = async () =>
+					assistantMessage(assistantTextMarker) as Awaited<ReturnType<typeof harness.prompt>>;
+			},
+		};
+		const harness = await createAgent(profile, {
+			cwd,
+			apiKey: "test-api-key",
+			reviewLoop: { enabled: true, maxAttempts: 1, maxTurns: 3 },
+		});
+
+		try {
+			const result = await createPiRuntimeAdapter(harness).run({
+				id: "W20-A1",
+				goal: "Return usage plus evidence references for a read-only domain-tool operation.",
+				rawRequest: rawRequestMarker,
+				hardConstraints: [{
+					kind: "evidence",
+					value: "Return a NormalizedResult with usage and evidenceRefs.",
+					source: "test",
+				}],
+				assignedSkill: "health",
+				writeScope: [],
+				allowedTools: ["nutrition_estimate"],
+				gateTier: "G0",
+			});
+			const session = harness.getSession();
+			if (!session) throw new Error("expected session");
+			const metadata = await session.getMetadata();
+			const manifestPath = join(cwd, ".pi-harness", "sessions", metadata.id, "evidence", metadata.id, "manifest.json");
+			const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as EvidenceManifestEntry[];
+			const entry = manifest.find((item) => item.id === result.evidenceRefs[0]);
+			if (!entry) throw new Error("expected evidence manifest entry");
+			const stdout = await readFile(join(cwd, ".pi-harness", "sessions", metadata.id, entry.stdoutRef), "utf8");
+
+			expect(result.status).toBe("completed");
+			expect(result.usage.inputTokens).toBeGreaterThan(0);
+			expect(result.evidenceRefs).toHaveLength(1);
+			expect(entry.command).toBe("pi-harness task-contract attempt summary");
+			expect(stdout).toContain("\"assignedSkill\":\"health\"");
+			expect(stdout).toContain("\"allowedTools\":[\"nutrition_estimate\"]");
+			expect(stdout).not.toContain(rawRequestMarker);
+			expect(stdout).not.toContain(assistantTextMarker);
 		} finally {
 			await harness.dispose();
 		}

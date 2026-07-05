@@ -5,9 +5,11 @@ import type {
 	Session,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
 import { isAbsolute, join, resolve } from "node:path";
 import { createJsonlSession } from "../session/factory.ts";
 import type { HarnessConfig, ResolvedHarnessConfig } from "../config.ts";
+import type { TaskContract } from "../contract/index.ts";
 import { resolveHarnessConfig } from "../config.ts";
 import { createExecutionEnvCheckpointStore } from "../checkpoint/index.ts";
 import {
@@ -15,6 +17,8 @@ import {
 	createEvidenceReceiptCollector,
 	recordEvidenceGatewayEntries,
 	type EvidenceGateway,
+	type EvidenceManifestEntry,
+	type EvidenceReceiptCollector,
 } from "../evidence/index.ts";
 import { createReceiptLedger } from "../feedback/index.ts";
 import { GenericHarness, createGenericHarnessFromSession, type GenericHarnessRuntimeOptions } from "../harness.ts";
@@ -253,6 +257,18 @@ async function buildRequestLifecycleRuntime(
 			checkpoint,
 			ledger: createReceiptLedger(),
 			receiptCollector,
+			...(input.evidenceGateway
+				? {
+						captureTaskAttemptEvidence: async ({ attempt, taskContract, message }) =>
+							await captureSanitizedTaskAttemptEvidence({
+								evidenceGateway: input.evidenceGateway!,
+								receiptCollector,
+								attempt,
+								taskContract,
+								message,
+							}),
+					}
+				: {}),
 			maxAttempts: input.config.reviewLoop.maxAttempts ?? runPolicy?.repairLimits?.maxAttempts,
 			maxTurns: input.config.reviewLoop.maxTurns ?? runPolicy?.budget?.maxTurns,
 			...(input.budgetTracker ? { budget: input.budgetTracker } : {}),
@@ -271,6 +287,48 @@ async function buildRequestLifecycleRuntime(
 			reviewer: async ({ input: reviewerInput }) => await reviewerAgent.review(reviewerInput),
 		},
 	};
+}
+
+async function captureSanitizedTaskAttemptEvidence(input: {
+	evidenceGateway: EvidenceGateway;
+	receiptCollector: EvidenceReceiptCollector;
+	attempt: number;
+	taskContract: TaskContract;
+	message: AssistantMessage;
+}): Promise<EvidenceManifestEntry> {
+	const assignmentDigest = taskContractDigest(input.taskContract);
+	const entry = await input.evidenceGateway.captureOutput({
+		id: `task-attempt-${input.attempt}-${assignmentDigest.slice(0, 12)}`,
+		command: "pi-harness task-contract attempt summary",
+		subject: "TaskContract attempt summary",
+		allowed: { level: "allow", ruleId: "task-contract-summary" },
+		writeScope: input.taskContract.writeScope,
+		actualWritePaths: [],
+		assignmentDigest,
+		stdout: JSON.stringify({
+			schema: "pi-harness.task-attempt-summary.v1",
+			attempt: input.attempt,
+			assignmentDigest,
+			assignedSkill: input.taskContract.assignedSkill,
+			allowedTools: input.taskContract.allowedTools ?? [],
+			writeScopeCount: input.taskContract.writeScope.length,
+			gateTier: input.taskContract.gateTier,
+			stopReason: input.message.stopReason,
+			usage: {
+				inputTokens: input.message.usage.input,
+				outputTokens: input.message.usage.output,
+				costUsd: input.message.usage.cost.total,
+			},
+		}),
+		stderr: "",
+		exitCode: input.message.stopReason === "error" ? 1 : 0,
+	});
+	input.receiptCollector.record(entry);
+	return entry;
+}
+
+function taskContractDigest(taskContract: TaskContract): string {
+	return createHash("sha256").update(JSON.stringify(taskContract)).digest("hex");
 }
 
 function resolveReviewerProfile(name: string, parentProfile: AgentProfile): AgentProfile {
