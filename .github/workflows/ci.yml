@@ -8,6 +8,9 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Verifies the public-clone experience: compass-health-agent is an OPTIONAL
+  # dependency, so install, typecheck, tests, build, and the CLI must all work
+  # without it (the compass-health profile is simply not registered).
   build:
     name: Node 22 (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -19,6 +22,40 @@ jobs:
         os:
           - ubuntu-latest
           - windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke CLI
+        run: node dist/cli/index.js --help
+
+  # Integration with the private compass-health-agent sibling. Non-blocking:
+  # it drifts red whenever the pinned branch lags the harness (e.g. new handlers
+  # not yet pushed) and must not fail the public build.
+  compass-health-integration:
+    name: Compass Health integration (optional)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    continue-on-error: true
 
     steps:
       - name: Checkout
@@ -50,12 +87,6 @@ jobs:
 
       - name: Test
         run: npm test
-
-      - name: Build
-        run: npm run build
-
-      - name: Smoke CLI
-        run: node dist/cli/index.js --help
 
   worker-reviewer-eval:
     name: Worker-reviewer eval (DeepSeek)
