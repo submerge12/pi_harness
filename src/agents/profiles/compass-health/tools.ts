@@ -18,6 +18,7 @@ const WRITE_EFFECTS = {
 	meal_checkin: writeEffect("meal_plan_entries"),
 	update_cooking_record: writeEffect("cooking_records"),
 	generate_meal_plan: writeEffect("meal_plan_entries"),
+	swap_meal: writeEffect("meal_plan_entries"),
 	remember: writeEffect("memory_records"),
 	save_dish: writeEffect("user_dishes"),
 } as const;
@@ -204,6 +205,12 @@ const updateCookingRecordParams = Type.Object({
 
 const generateMealPlanParams = Type.Object({
 	startDate: Type.Optional(Type.String()),
+});
+
+const swapMealParams = Type.Object({
+	date: Type.String(),
+	mealType: Type.String(),
+	alternateSlug: Type.String(),
 });
 
 const recipeRecommendParams = Type.Object({
@@ -409,6 +416,19 @@ export function createCompassHealthToolRegistrations(
 				async execute(toolCallId, params: any) {
 					return await executeWriteTool(factoryContext, toolCallId, "generate_meal_plan", async () =>
 						await handlers.handleSmartGenerateMealPlan(requireCtx(), params));
+				},
+			},
+			accessLevel: "write",
+		},
+		{
+			tool: {
+				name: "swap_meal",
+				label: "Swap Meal",
+				description: "Swap a planned lunch/dinner for an alternate dish and re-balance the day's staple and protein.",
+				parameters: swapMealParams,
+				async execute(toolCallId, params: any) {
+					return await executeWriteTool(factoryContext, toolCallId, "swap_meal", async () =>
+						await handlers.handleSwapMeal(requireCtx(), params));
 				},
 			},
 			accessLevel: "write",

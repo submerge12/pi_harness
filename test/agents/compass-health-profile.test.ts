@@ -48,6 +48,24 @@ const mocks = vi.hoisted(() => {
 		handleRecall: vi.fn(async () => ({
 			memories: [{ id: "memory-1", kind: "preference", subject: "breakfast" }],
 		})),
+		handleSwapMeal: vi.fn(async () => ({
+			entryId: "entry-1",
+			date: "2026-07-06",
+			mealType: "lunch",
+			previousDishSlug: "old-dish",
+			newDish: { slug: "chaoshan_beef_soup", name: "Chaoshan beef soup" },
+			stapleGrams: 90,
+			proteinTopUps: [],
+			dayTotals: {
+				kcal: 1775,
+				proteinGrams: 140,
+				carbsGrams: 192,
+				fatGrams: 50,
+				sodiumMg: 1800,
+			},
+			withinEnergyBand: true,
+			meetsProteinFloor: true,
+		})),
 	};
 });
 
@@ -61,6 +79,7 @@ vi.mock("compass-health-agent/tools/handlers", () => ({
 	handleLogMeal: mocks.handleLogMeal,
 	handleRemember: mocks.handleRemember,
 	handleRecall: mocks.handleRecall,
+	handleSwapMeal: mocks.handleSwapMeal,
 	handleProactiveCheck: mocks.handleProactiveCheck,
 }));
 
@@ -310,6 +329,20 @@ describe("compass health profile adapter", () => {
 		});
 		expect(mocks.handleGetProfile).toHaveBeenNthCalledWith(1, mocks.ctx, {});
 		expect(mocks.handleGetProfile).toHaveBeenNthCalledWith(2, mocks.ctx, {});
+
+		const swapMeal = registrations.find((registration) => registration.tool.name === "swap_meal");
+		const swapMealParams = {
+			date: "2026-07-06",
+			mealType: "lunch",
+			alternateSlug: "chaoshan_beef_soup",
+		};
+
+		expect(swapMeal?.accessLevel).toBe("write");
+		expect(Value.Check(swapMeal?.tool.parameters as any, swapMealParams)).toBe(true);
+		await expect(swapMeal?.tool.execute("call-swap-meal", swapMealParams)).resolves.toMatchObject({
+			details: { newDish: { slug: "chaoshan_beef_soup" } },
+		});
+		expect(mocks.handleSwapMeal).toHaveBeenCalledWith(mocks.ctx, swapMealParams);
 
 		const remember = registrations.find((registration) => registration.tool.name === "remember");
 		const recall = registrations.find((registration) => registration.tool.name === "recall");
