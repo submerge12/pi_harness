@@ -9,6 +9,9 @@ import {
 	createReceiptLedger,
 	createInMemoryTraceSink,
 	createSkillCardRegistry,
+	ModelFailureError,
+	recallUserMemories,
+	recallVerdictLessons,
 	type EvidenceManifestEntry,
 	type SkillCard,
 	type UserMemoryRecord,
@@ -209,7 +212,7 @@ describe("request lifecycle integration", () => {
 			memory: { store: new InMemoryUserMemoryStore(), scope: "global", subject: "user" },
 		});
 
-		expect(result.stageTrace.map((event) => event.stage)).toEqual(["execute"]);
+		expect(result.stageTrace.map((event) => event.stage)).toEqual(["execute", "memory-write"]);
 		expect(calls[0]).toContain("Execute delegated lifecycle integration");
 	});
 
@@ -290,12 +293,12 @@ describe("request lifecycle integration", () => {
 			prompt: async (text: string) => {
 				calls.push(text);
 				receiptCollector.record(manifestEntry({ id: `receipt-${calls.length}` }));
-				return assistantMessage("worker wrote ok");
+				return assistantMessage("PI_HARNESS_DONE\nworker wrote ok");
 			},
 			promptTaskAttempt: async (_taskContract, text) => {
 				calls.push(text);
 				receiptCollector.record(manifestEntry({ id: `receipt-${calls.length}` }));
-				return assistantMessage("worker wrote ok");
+				return assistantMessage("PI_HARNESS_DONE\nworker wrote ok");
 			},
 		}, { taskContract }, {
 			skillRegistry: createSkillCardRegistry([lifecycleCard()]),
@@ -309,7 +312,7 @@ describe("request lifecycle integration", () => {
 				maxAttempts: 3,
 				reviewer: async ({ input }) => {
 					expect(input.workerTranscript).toBeUndefined();
-					expect(input.diff).toBe("worker wrote ok");
+					expect(input.diff).toBe("PI_HARNESS_DONE\nworker wrote ok");
 					expect(input.evidenceManifest).toHaveLength(1);
 					return {
 						verdict: "PASS",
@@ -333,7 +336,302 @@ describe("request lifecycle integration", () => {
 			"review-verdict",
 			"transition",
 			"stage",
+			"stage",
 		]);
+	});
+
+	it("stamps plain-string diff sources as custom, never git", async () => {
+		const trace = createInMemoryTraceSink({ runId: "task-contract-custom-diff", now: () => 3_000 });
+		const receiptCollector = createEvidenceReceiptCollector();
+		const seenDiffOrigins: Array<string | undefined> = [];
+		const result = await runAgentRequest({
+			prompt: async () => {
+				receiptCollector.record(manifestEntry({ id: "receipt-1" }));
+				return assistantMessage("PI_HARNESS_DONE\nworker wrote ok");
+			},
+			promptTaskAttempt: async () => {
+				receiptCollector.record(manifestEntry({ id: "receipt-1" }));
+				return assistantMessage("PI_HARNESS_DONE\nworker wrote ok");
+			},
+		}, { taskContract }, {
+			skillRegistry: createSkillCardRegistry([lifecycleCard()]),
+			routing: { routes: [] },
+			memory: { store: new InMemoryUserMemoryStore(), scope: "global", subject: "user" },
+			trace,
+			workerReviewerLoop: {
+				checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+				ledger: createReceiptLedger(),
+				receiptCollector,
+				maxAttempts: 1,
+				// Legacy consumer-supplied source returning a bare string: provenance is unknown.
+				diffSource: () => "diff text from an external tool",
+				reviewer: async ({ input }) => {
+					seenDiffOrigins.push(input.diffOrigin);
+					return {
+						verdict: "PASS",
+						reviewer: "blind-reviewer",
+						phase: "cross-check",
+						findings: [],
+						decidedAt: 3_000,
+					};
+				},
+			},
+		});
+
+		expect(result.entryStage).toBe("execute");
+		if (result.entryStage !== "execute") throw new Error("expected execute result");
+		expect(seenDiffOrigins).toEqual(["custom"]);
+		expect(result.reviewVerdicts?.[0]?.diffOrigin).toBe("custom");
+	});
+
+	it("grants tool_evidenced trust only to facts linked to actual run receipts", async () => {
+		const trace = createInMemoryTraceSink({ runId: "task-contract-evidence-memory", now: () => 3_000 });
+		const receiptCollector = createEvidenceReceiptCollector();
+		const memoryStore = new InMemoryUserMemoryStore();
+		const workerText = [
+			"PI_HARNESS_DONE",
+			"worker wrote ok",
+			"tool-evidenced[receipt-1]: build.status = green",
+			"tool-evidenced[receipt-999]: build.flavor = red",
+		].join("\n");
+		const result = await runAgentRequest({
+			prompt: async () => {
+				receiptCollector.record(manifestEntry({ id: "receipt-1" }));
+				return assistantMessage(workerText);
+			},
+			promptTaskAttempt: async () => {
+				receiptCollector.record(manifestEntry({ id: "receipt-1" }));
+				return assistantMessage(workerText);
+			},
+		}, { taskContract }, {
+			skillRegistry: createSkillCardRegistry([lifecycleCard()]),
+			routing: { routes: [] },
+			memory: { store: memoryStore, scope: "global", subject: "user" },
+			trace,
+			workerReviewerLoop: {
+				checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+				ledger: createReceiptLedger(),
+				receiptCollector,
+				maxAttempts: 1,
+				reviewer: async () => ({
+					verdict: "PASS",
+					reviewer: "blind-reviewer",
+					phase: "cross-check",
+					findings: [],
+					decidedAt: 3_000,
+				}),
+			},
+		});
+
+		expect(result.entryStage).toBe("execute");
+		if (result.entryStage !== "execute") throw new Error("expected execute result");
+		expect(result.evidenceRefs).toEqual(["receipt-1"]);
+		const trustByPredicate = new Map(result.writtenMemories.map((memory) => [memory.predicate, memory.trust]));
+		// Linked to an actual receipt id → tool_evidenced; unknown receipt id → downgraded.
+		expect(trustByPredicate.get("status")).toBe("tool_evidenced");
+		expect(trustByPredicate.get("flavor")).toBe("model_inferred");
+	});
+
+	it("writes failed-review lessons and appends them to the next attempt prompt", async () => {
+		const trace = createInMemoryTraceSink({ runId: "task-contract-lessons", now: () => 3_000 });
+		const receiptCollector = createEvidenceReceiptCollector();
+		const memoryStore = new InMemoryUserMemoryStore();
+		const prompts: string[] = [];
+		let reviewCount = 0;
+
+		const result = await runAgentRequest({
+			promptTaskAttempt: async (_taskContract, text) => {
+				prompts.push(text);
+				receiptCollector.record(manifestEntry({ id: `receipt-${prompts.length}` }));
+				return assistantMessage(`PI_HARNESS_DONE\nworker attempt ${prompts.length}`);
+			},
+			prompt: async (text) => {
+				prompts.push(text);
+				receiptCollector.record(manifestEntry({ id: `receipt-${prompts.length}` }));
+				return assistantMessage(`PI_HARNESS_DONE\nworker attempt ${prompts.length}`);
+			},
+		}, { taskContract }, {
+			skillRegistry: createSkillCardRegistry([lifecycleCard()]),
+			routing: { routes: [] },
+			memory: { store: memoryStore, scope: "global", subject: "user" },
+			now: () => 1_000,
+			trace,
+			workerReviewerLoop: {
+				checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+				ledger: createReceiptLedger(),
+				receiptCollector,
+				maxAttempts: 2,
+				runPolicy: { lessons: { ttlMs: 50 } },
+				reviewer: async () => {
+					reviewCount += 1;
+					return reviewCount === 1
+						? {
+								verdict: "FAIL",
+								reviewer: "blind-reviewer",
+								phase: "blind",
+								findings: [{ severity: "blocker", claim: "run tests before claiming done" }],
+								decidedAt: 1_010,
+							}
+						: {
+								verdict: "PASS",
+								reviewer: "blind-reviewer",
+								phase: "blind",
+								findings: [],
+								decidedAt: 1_020,
+							};
+				},
+			},
+		});
+
+		expect(result.entryStage).toBe("execute");
+		if (result.entryStage !== "execute") throw new Error("expected execute result");
+		expect(result.loopState).toBe("DONE");
+		expect(prompts).toHaveLength(2);
+		expect(prompts[0]).not.toContain("Lessons from prior reviewed failures");
+		expect(prompts[1]).toContain("Lessons from prior reviewed failures");
+		expect(prompts[1]).toContain("- run tests before claiming done");
+		const lessons = recallVerdictLessons(memoryStore, {
+			skill: taskContract.assignedSkill,
+			now: 1_025,
+		});
+		expect(lessons).toHaveLength(1);
+		expect(lessons[0]?.trust).toBe("model_inferred");
+		expect(recallVerdictLessons(memoryStore, {
+			skill: taskContract.assignedSkill,
+			now: 1_100,
+		})).toEqual([]);
+		const background = recallUserMemories(memoryStore, { scope: "global", subject: "worker", now: 1_025 })
+			.filter((memory) => memory.trust !== "model_inferred");
+		expect(background).toEqual([]);
+	});
+
+	it("does not claim completion for conversational give-up messages", async () => {
+		const trace = createInMemoryTraceSink({ runId: "task-contract-give-up", now: () => 3_000 });
+		const receiptCollector = createEvidenceReceiptCollector();
+		let reviewerCalls = 0;
+		const result = await runAgentRequest({
+			promptTaskAttempt: async () => {
+				receiptCollector.record(manifestEntry({ id: "receipt-give-up" }));
+				return assistantMessage("I couldn't finish this.");
+			},
+			prompt: async () => assistantMessage("unused"),
+		}, { taskContract }, {
+			skillRegistry: createSkillCardRegistry([lifecycleCard()]),
+			routing: { routes: [] },
+			memory: { store: new InMemoryUserMemoryStore(), scope: "global", subject: "user" },
+			trace,
+			workerReviewerLoop: {
+				checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+				ledger: createReceiptLedger(),
+				receiptCollector,
+				maxAttempts: 1,
+				reviewer: async () => {
+					reviewerCalls += 1;
+					return {
+						verdict: "PASS",
+						reviewer: "blind-reviewer",
+						phase: "cross-check",
+						findings: [],
+						decidedAt: 3_000,
+					};
+				},
+			},
+		});
+
+		expect(result.entryStage).toBe("execute");
+		if (result.entryStage !== "execute") throw new Error("expected execute result");
+		expect(result.loopState).toBe("NEEDS_HUMAN");
+		expect(result.completionGateFailures).toEqual([
+			{ attempt: 1, reason: "worker did not claim completion" },
+		]);
+		expect(reviewerCalls).toBe(0);
+	});
+
+	it("preserves worker error messages when the worker-reviewer loop stops", async () => {
+		const trace = createInMemoryTraceSink({ runId: "task-contract-error-message", now: () => 3_000 });
+		let reviewerCalls = 0;
+		const errorMessage = {
+			...assistantMessage("Model output classified as refusal by profile failure signatures."),
+			stopReason: "error" as const,
+			errorMessage: "Model output classified as refusal by profile failure signatures.",
+		};
+
+		const result = await runAgentRequest({
+			promptTaskAttempt: async () => errorMessage,
+			prompt: async () => errorMessage,
+		}, { taskContract }, {
+			skillRegistry: createSkillCardRegistry([lifecycleCard()]),
+			routing: { routes: [] },
+			memory: { store: new InMemoryUserMemoryStore(), scope: "global", subject: "user" },
+			trace,
+			workerReviewerLoop: {
+				checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+				ledger: createReceiptLedger(),
+				maxAttempts: 1,
+				reviewer: async () => {
+					reviewerCalls += 1;
+					return {
+						verdict: "PASS",
+						reviewer: "blind-reviewer",
+						phase: "cross-check",
+						findings: [],
+						decidedAt: 3_000,
+					};
+				},
+			},
+		});
+
+		expect(result.entryStage).toBe("execute");
+		if (result.entryStage !== "execute") throw new Error("expected execute result");
+		expect(result.loopState).toBe("NEEDS_HUMAN");
+		expect(result.message).toBe(errorMessage);
+		expect(reviewerCalls).toBe(0);
+	});
+
+	it("terminates the worker-reviewer loop on typed model failures without reviewer calls", async () => {
+		const trace = createInMemoryTraceSink({ runId: "task-contract-model-failure", now: () => 3_000 });
+		let reviewerCalls = 0;
+		const result = await runAgentRequest({
+			promptTaskAttempt: async () => {
+				throw new ModelFailureError(
+					{ kind: "loop", pattern: "linear-repetition-loop-detector" },
+					"The next step is to check the configuration file. ".repeat(8),
+				);
+			},
+			prompt: async () => {
+				throw new ModelFailureError(
+					{ kind: "loop", pattern: "linear-repetition-loop-detector" },
+					"The next step is to check the configuration file. ".repeat(8),
+				);
+			},
+		}, { taskContract }, {
+			skillRegistry: createSkillCardRegistry([lifecycleCard()]),
+			routing: { routes: [] },
+			memory: { store: new InMemoryUserMemoryStore(), scope: "global", subject: "user" },
+			trace,
+			workerReviewerLoop: {
+				checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+				ledger: createReceiptLedger(),
+				maxAttempts: 3,
+				reviewer: async () => {
+					reviewerCalls += 1;
+					return {
+						verdict: "PASS",
+						reviewer: "blind-reviewer",
+						phase: "cross-check",
+						findings: [],
+						decidedAt: 3_000,
+					};
+				},
+			},
+		});
+
+		expect(result.entryStage).toBe("execute");
+		if (result.entryStage !== "execute") throw new Error("expected execute result");
+		expect(result.loopState).toBe("FAILED");
+		expect(result.modelFailure).toEqual({ kind: "loop", pattern: "linear-repetition-loop-detector" });
+		expect(result.message.stopReason).toBe("error");
+		expect(reviewerCalls).toBe(0);
 	});
 
 	it("passes lifecycle humanGate decisions into the worker-reviewer loop", async () => {
@@ -344,7 +642,7 @@ describe("request lifecycle integration", () => {
 		const recordWorkerReceipt = (text: string): AssistantMessage => {
 			workerCount += 1;
 			receiptCollector.record(manifestEntry({ id: `receipt-${workerCount}` }));
-			return assistantMessage(`worker attempt ${text.includes("attempt=2") ? "2" : String(workerCount)}`);
+			return assistantMessage(`PI_HARNESS_DONE\nworker attempt ${text.includes("attempt=2") ? "2" : String(workerCount)}`);
 		};
 		const result = await runAgentRequest({
 			promptTaskAttempt: async (_taskContract, text) => recordWorkerReceipt(text),
@@ -391,7 +689,7 @@ describe("request lifecycle integration", () => {
 		expect(result.entryStage).toBe("execute");
 		if (result.entryStage !== "execute") throw new Error("expected execute result");
 		expect(reviewCount).toBe(2);
-		expect(result.message.content).toEqual([{ type: "text", text: "worker attempt 2" }]);
+		expect(result.message.content).toEqual([{ type: "text", text: "PI_HARNESS_DONE\nworker attempt 2" }]);
 		expect(trace.events().map((event) => event.type)).toContain("human-decision");
 	});
 });

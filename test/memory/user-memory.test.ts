@@ -70,6 +70,43 @@ describe("user memory pipeline", () => {
 		});
 	});
 
+	test("upgrades duplicate facts to the strongest trust and refreshes validity metadata", () => {
+		const store = new InMemoryUserMemoryStore();
+
+		writeUserMemory(
+			store,
+			memory({
+				id: "inferred",
+				trust: "model_inferred",
+				sensitivity: "inferred",
+				source: "model inference",
+				expiresAt: 2_000,
+				validTo: 2_000,
+			}),
+		);
+		writeUserMemory(
+			store,
+			memory({
+				id: "confirmed",
+				trust: "user_confirmed",
+				sensitivity: "personal",
+				source: "user request",
+				lastConfirmedAt: 3_000,
+			}),
+		);
+
+		expect(store.records()).toHaveLength(1);
+		expect(store.records()[0]).toMatchObject({
+			id: "inferred",
+			trust: "user_confirmed",
+			sensitivity: "personal",
+			source: "user request",
+			lastConfirmedAt: 3_000,
+		});
+		expect(store.records()[0].expiresAt).toBeUndefined();
+		expect(store.records()[0].validTo).toBeUndefined();
+	});
+
 	test("selects conflicting recall winners by trust tier before recency", () => {
 		const store = new InMemoryUserMemoryStore();
 
@@ -145,6 +182,16 @@ describe("user memory pipeline", () => {
 
 		expect(recallUserMemories(store, { subject: "user", now: 3_000 }).map((record) => record.id)).toEqual(["active"]);
 		expect(recallUserMemories(store, { subject: "user", predicate: "diet", now: 3_000 })).toEqual([]);
+	});
+
+	test("garbage-collects expired records during recall", () => {
+		const store = new InMemoryUserMemoryStore();
+
+		writeUserMemory(store, memory({ id: "expired", predicate: "editor", expiresAt: 2_500 }));
+		writeUserMemory(store, memory({ id: "active", predicate: "shell", expiresAt: 5_000 }));
+
+		expect(recallUserMemories(store, { subject: "user", now: 3_000 }).map((record) => record.id)).toEqual(["active"]);
+		expect(store.records().map((record) => record.id)).toEqual(["active"]);
 	});
 
 	test("recalls global and active-domain memories, excluding other domains", () => {

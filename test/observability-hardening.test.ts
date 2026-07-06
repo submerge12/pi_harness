@@ -1,13 +1,14 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import type { CacheStrategyDecision } from "../src/cache/types.ts";
 import { BudgetTracker } from "../src/observability/budget.ts";
 import { CacheReportTracker } from "../src/observability/cache-report.ts";
 import { EventLog, createSessionEventLogPath } from "../src/observability/event-log.ts";
 import { redact } from "../src/observability/redact.ts";
 import type { HarnessEvent, TurnCost, UsageSnapshot } from "../src/observability/types.ts";
+import { clearKnownSecretsForTesting, registerKnownSecret } from "../src/redaction/core.ts";
 
 function usage(totalUsd: number, cacheRead: number, input = 100): UsageSnapshot {
 	return {
@@ -59,6 +60,10 @@ function decision(strategy: CacheStrategyDecision["profile"]["strategy"]): Cache
 }
 
 describe("observability hardening", () => {
+	afterEach(() => {
+		clearKnownSecretsForTesting();
+	});
+
 	test("redact_masks_secret_keys_and_bearer_tokens", () => {
 		const redacted = redact({
 			apiKey: "sk-live",
@@ -95,6 +100,25 @@ describe("observability hardening", () => {
 		});
 	});
 
+	test("redact_masks_registered_secret_values_inside_object_keys", () => {
+		registerKnownSecret("sk-test-object-value");
+
+		const redacted = redact({
+			"sk-test-object-value": "visible",
+			nested: {
+				"prefix-sk-test-object-value-suffix": "also visible",
+			},
+		});
+
+		expect(JSON.stringify(redacted)).not.toContain("sk-test-object-value");
+		expect(redacted).toEqual({
+			"[REDACTED]": "visible",
+			nested: {
+				"prefix-[REDACTED]-suffix": "also visible",
+			},
+		});
+	});
+
 	test("budget_tracker_warns_then_refuses_new_turns_past_cap", () => {
 		const tracker = new BudgetTracker({ warnAtUsd: 0.02, maxUsdPerSession: 0.03 });
 
@@ -123,9 +147,9 @@ describe("observability hardening", () => {
 
 	test("cache_report_warns_when_actual_hit_rate_drops_sharply", () => {
 		const report = new CacheReportTracker({ sharpDropThreshold: 0.3 });
-		report.recordDecision(decision("session-affinity"));
+		report.recordDecision(decision("session-affinity"), 1);
 		report.recordTurn(turn(1, 300));
-		report.recordDecision(decision("session-affinity"));
+		report.recordDecision(decision("session-affinity"), 2);
 		report.recordTurn(turn(2, 20));
 
 		const entries = report.getEntries();
@@ -140,7 +164,7 @@ describe("observability hardening", () => {
 	test("cache_report_records_decisions_by_value", () => {
 		const report = new CacheReportTracker();
 		const cacheDecision = decision("session-affinity");
-		report.recordDecision(cacheDecision);
+		report.recordDecision(cacheDecision, 1);
 		cacheDecision.profile.strategy = "no-cache";
 		report.recordTurn(turn(1, 100));
 
@@ -189,5 +213,53 @@ describe("observability hardening", () => {
 				},
 			},
 		});
+	});
+
+	test("event_log_redacts_key_value_assignments_inside_tool_result_text", async () => {
+		const root = await mkdtemp(join(tmpdir(), "pi-harness-observability-"));
+		const filePath = createSessionEventLogPath(root, "session-1");
+		const log = new EventLog({ filePath, now: () => new Date("2026-06-10T00:00:00.000Z") });
+
+		await log.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "call-1",
+			toolName: "bash",
+			result: {
+				content: [
+					{
+						type: "text",
+						text: "before\nDEEPSEEK_API_KEY=sk-test-event-log-secret\nafter",
+					},
+				],
+			},
+		});
+
+		const content = await readFile(filePath, "utf8");
+		const lastLine = content.trim().split("\n").at(-1) ?? "";
+
+		expect(lastLine).toContain("DEEPSEEK_API_KEY=[REDACTED]");
+		expect(lastLine).not.toContain("sk-test-event-log-secret");
+	});
+
+	test("event_log_redacts_registered_bare_secret_values", async () => {
+		registerKnownSecret("sk-test-known-event-secret");
+		const root = await mkdtemp(join(tmpdir(), "pi-harness-observability-"));
+		const filePath = createSessionEventLogPath(root, "session-1");
+		const log = new EventLog({ filePath, now: () => new Date("2026-06-10T00:00:00.000Z") });
+
+		await log.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: "call-1",
+			toolName: "bash",
+			result: {
+				content: [{ type: "text", text: "raw output sk-test-known-event-secret done" }],
+			},
+		});
+
+		const content = await readFile(filePath, "utf8");
+		const lastLine = content.trim().split("\n").at(-1) ?? "";
+
+		expect(lastLine).toContain("raw output [REDACTED] done");
+		expect(lastLine).not.toContain("sk-test-known-event-secret");
 	});
 });

@@ -1,6 +1,9 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentRequestResult } from "../lifecycle/index.ts";
+import { failureRetryClassification } from "../model-adapters/index.ts";
+import type { ModelFailureClassification } from "../model-adapters/index.ts";
 import { findModelProfile } from "../model-profiles/registry.ts";
+import { configuredToolNames as configuredToolNamesFromSurfaces } from "../tools/metadata.ts";
 import type { AgentRuntimeAdapter, ExecutorCapabilities, PiRuntimeHarness, WorkerAssignment } from "./types.ts";
 import type { NormalizedResult } from "./schemas/normalized-result.ts";
 
@@ -12,11 +15,14 @@ export function createPiRuntimeAdapter(harness: PiRuntimeHarness): AgentRuntimeA
 		capabilities(): ExecutorCapabilities {
 			const config = harness.getConfig();
 			const tools = configuredToolNames(config);
+			const profile = config.provider && config.modelId
+				? findModelProfile({ provider: config.provider, modelId: config.modelId })
+				: undefined;
 			return {
 				canEdit: hasAnyTool(tools, ["write", "edit"]),
 				canRunCommands: hasAnyTool(tools, ["bash"]),
 				canNetwork: hasAnyTool(tools, ["fetch"]),
-				maxContextTokens: config.contextWindow ?? DEFAULT_CONTEXT_TOKENS,
+				maxContextTokens: config.contextWindow ?? profile?.window.effective ?? DEFAULT_CONTEXT_TOKENS,
 				supportsThinking: config.thinkingLevel !== undefined && config.thinkingLevel !== "off",
 			};
 		},
@@ -51,8 +57,8 @@ function executedModelId(config: ReturnType<PiRuntimeHarness["getConfig"]>): str
 
 function configuredToolNames(config: ReturnType<PiRuntimeHarness["getConfig"]>): readonly string[] | undefined {
 	if (config.activeToolNames) return [...config.activeToolNames];
-	if (config.toolRegistrations) return config.toolRegistrations.map((registration) => registration.tool.name);
-	if (config.tools) return config.tools.map((tool) => tool.name);
+	const configured = configuredToolNamesFromSurfaces(config);
+	if (configured.length > 0) return configured;
 	if (config.useDefaultTools !== false) return ["read", "write", "edit", "ls", "grep", "glob", "bash", "fetch"];
 	return undefined;
 }
@@ -77,6 +83,7 @@ function normalizeAgentRequestResult(result: AgentRequestResult): NormalizedResu
 		status: statusFromExecuteResult(result),
 		evidenceRefs: result.evidenceRefs,
 		diffRef: result.diffRef,
+		...(result.modelFailure ? { modelFailure: result.modelFailure } : {}),
 	});
 }
 
@@ -86,6 +93,7 @@ function normalizeAssistantMessage(
 		status?: NormalizedResult["status"];
 		evidenceRefs?: readonly string[];
 		diffRef?: string;
+		modelFailure?: ModelFailureClassification;
 	} = {},
 ): NormalizedResult {
 	const text = assistantText(message);
@@ -102,12 +110,23 @@ function normalizeAssistantMessage(
 			costUsd: usage.cost.total,
 		},
 		message: text,
+		...(options.modelFailure
+			? {
+					error: {
+						type: "model_failure" as const,
+						kind: options.modelFailure.kind,
+						pattern: options.modelFailure.pattern,
+						retryClassification: failureRetryClassification(options.modelFailure.kind),
+					},
+				}
+			: {}),
 	};
 }
 
 function statusFromExecuteResult(
 	result: Extract<AgentRequestResult, { entryStage: "execute" }>,
 ): NormalizedResult["status"] {
+	if (result.loopState === "DONE") return "completed";
 	if (result.message.stopReason === "error") return "failed";
 	if (result.loopState === "FAILED") return "failed";
 	if ((result.completionGateFailures?.length ?? 0) > 0) return "failed";

@@ -1,5 +1,4 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { estimateTokens } from "@earendil-works/pi-agent-core";
 import {
 	DEFAULT_PRUNE_MAX_RESULT_TOKENS,
 	DEFAULT_PRUNE_MIN_TURNS_KEPT,
@@ -7,6 +6,7 @@ import {
 	type PruneCandidate,
 } from "./relevance.ts";
 import { createTombstoneAnchor } from "./lifecycle.ts";
+import { estimateMessageTokens } from "./token-estimator.ts";
 
 export const DEFAULT_PRUNE_EXPECTED_FUTURE_TURNS = 3;
 
@@ -119,7 +119,7 @@ function emptyPlan(messages: AgentMessage[], decision: PruneDecision, config: Pr
 }
 
 function estimateMessagesTokens(messages: readonly AgentMessage[]): number {
-	return messages.reduce((total, message) => total + estimateTokens(message), 0);
+	return messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
 }
 
 function estimateExpectedFutureTurns(messages: readonly AgentMessage[]): number {

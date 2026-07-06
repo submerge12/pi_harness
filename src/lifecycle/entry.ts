@@ -8,6 +8,11 @@ import {
 	writeUserMemory,
 	type UserMemoryRecord,
 } from "../memory/index.ts";
+import {
+	isModelFailureError,
+	type ModelFailureClassification,
+	type ModelFailureError,
+} from "../model-adapters/index.ts";
 import { DEFAULT_MODEL_PROFILE } from "../model-profiles/registry.ts";
 import { runWorkerReviewerLoop } from "../orchestration/index.ts";
 import { runRequestFrontPipeline, type RouteMatch } from "../routing/index.ts";
@@ -17,13 +22,19 @@ import type {
 	AgentRequestHarness,
 	AgentRequestInput,
 	AgentRequestResult,
+	AttemptDiff,
 	RequestLifecycleTraceEvent,
 } from "./types.ts";
-import type { CompletionGateFailure } from "../feedback/index.ts";
+import {
+	recallVerdictLessons,
+	renderLessonsSuffix,
+	type CompletionGateFailure,
+} from "../feedback/index.ts";
 import type { ReviewVerdict } from "../review/index.ts";
 
 const DEFAULT_SCOPE = "global";
 const DEFAULT_SUBJECT = "user";
+const DONE_CLAIM_MARKER = "PI_HARNESS_DONE";
 
 interface TaskExecutionOutcome {
 	message: AssistantMessage;
@@ -32,6 +43,7 @@ interface TaskExecutionOutcome {
 	completionGateFailures?: readonly CompletionGateFailure[];
 	loopState?: "DONE" | "NEEDS_HUMAN" | "FAILED";
 	diffRef?: string;
+	modelFailure?: ModelFailureClassification;
 }
 
 export async function runAgentRequest(
@@ -52,12 +64,16 @@ export async function runAgentRequest(
 			? await executeTaskContractWithWorkerReviewerLoop(harness, front.taskContract, deps)
 			: await executeTaskContractWithReceipts(harness, front.taskContract, deps);
 		await recordStage(deps, stageTrace, { stage: "execute", status: "pass", detail: input.taskContract.assignedSkill });
+		const writtenMemories = execution.modelFailure
+			? []
+			: writeCandidateMemories(deps, front.taskContract.rawRequest, execution.message, now, execution.evidenceRefs);
+		await recordStage(deps, stageTrace, { stage: "memory-write", status: writtenMemories.length > 0 ? "pass" : "skip", detail: String(writtenMemories.length) });
 		return {
 			entryStage: "execute",
 			...execution,
 			stageTrace,
 			recalledMemories: [],
-			writtenMemories: [],
+			writtenMemories,
 		};
 	}
 
@@ -100,16 +116,25 @@ export async function runAgentRequest(
 	const dynamicSuffix = await loadSelectedSkillSuffix(frozenPrefix, selectedSkill, deps);
 	if (deps.getPrefixParts) assertPrefixInvariant(frozenPrefix, deps.getPrefixParts());
 	const executionText = composeExecutionText(input.rawRequest, recalledMemories, dynamicSuffix);
-	const message = await executeRequest(harness, executionText, selectedSkill);
+	let message: AssistantMessage;
+	let modelFailure: ModelFailureClassification | undefined;
+	try {
+		message = await executeRequest(harness, executionText, selectedSkill);
+	} catch (error) {
+		if (!isModelFailureError(error)) throw error;
+		message = modelFailureAssistantMessage(error);
+		modelFailure = error.classification;
+	}
 	await recordStage(deps, stageTrace, { stage: "execute", status: "pass", detail: selectedSkill?.name ?? front.route?.route.name });
 
-	const writtenMemories = writeCandidateMemories(deps, input.rawRequest, message, now);
+	const writtenMemories = modelFailure ? [] : writeCandidateMemories(deps, input.rawRequest, message, now);
 	await recordStage(deps, stageTrace, { stage: "memory-write", status: writtenMemories.length > 0 ? "pass" : "skip", detail: String(writtenMemories.length) });
 
 	return {
 		entryStage: "execute",
 		message,
 		evidenceRefs: [],
+		...(modelFailure ? { modelFailure } : {}),
 		route: front.route,
 		selectedSkill,
 		stageTrace,
@@ -142,25 +167,47 @@ async function executeTaskContractWithWorkerReviewerLoop(
 		budget: loop.budget,
 		policy: loop.policy ?? loop.runPolicy ?? {},
 		runPolicy: loop.runPolicy,
+		lessons: loopLessonsOptions(taskContract, deps, loop),
 		humanGate: loop.humanGate,
 		worker: async ({ attempt, maxTurns, failureDigest }) => {
 			loop.receiptCollector?.markAttemptStart(attempt);
-			const attemptPrompt = composeTaskContractAttempt(taskContract, attempt, failureDigest);
-			const message = taskContract.allowedTools?.length
-				? await promptAllowedTaskAttempt(harness, taskContract, attemptPrompt, { maxTurns })
-				: await harness.prompt(attemptPrompt, { maxTurns });
+			const attemptPrompt = composeTaskContractAttempt(
+				taskContract,
+				attempt,
+				failureDigest,
+				recallLessonsSuffix(taskContract, deps, loop),
+			);
+			let message: AssistantMessage;
+			try {
+				message = taskContract.allowedTools?.length
+					? await promptAllowedTaskAttempt(harness, taskContract, attemptPrompt, { maxTurns })
+					: await harness.prompt(attemptPrompt, { maxTurns });
+			} catch (error) {
+				if (!isModelFailureError(error)) throw error;
+				message = modelFailureAssistantMessage(error);
+				latestMessage = message;
+				return {
+					doneClaim: false,
+					diff: error.message,
+					diffOrigin: "self-report",
+					receipts: [],
+					modelFailure: error.classification,
+				};
+			}
 			latestMessage = message;
 			const collectedReceipts = loop.receiptCollector?.receiptsForAttempt(attempt) ?? [];
 			return {
-				doneClaim: message.stopReason !== "error",
-				diff: await readAttemptDiff(loop, { attempt, taskContract, message }),
+				doneClaim: isDoneClaim(message),
+				...await readAttemptDiff(loop, { attempt, taskContract, message }),
 				receipts: loop.receiptSource?.({ attempt, taskContract, message }) ?? collectedReceipts,
 			};
 		},
 		reviewer: loop.reviewer,
 	});
 
-	const message = result.state === "DONE" && latestMessage
+	const message = latestMessage?.stopReason === "error"
+		? latestMessage
+		: result.state === "DONE" && latestMessage
 		? latestMessage
 		: lifecycleAssistantMessage(`Worker-reviewer loop ended with ${result.state} after ${result.attempts} attempt(s).`);
 	return {
@@ -169,6 +216,7 @@ async function executeTaskContractWithWorkerReviewerLoop(
 		reviewVerdicts: result.reviewVerdicts,
 		completionGateFailures: result.completionGateFailures,
 		loopState: result.state,
+		...(result.modelFailure ? { modelFailure: result.modelFailure } : {}),
 	};
 }
 
@@ -176,6 +224,7 @@ function composeTaskContractAttempt(
 	taskContract: TaskContract,
 	attempt: number,
 	failureDigest: string | undefined,
+	lessonsSuffix: string | undefined,
 ): string {
 	return [
 		"TaskContract execution request:",
@@ -183,8 +232,54 @@ function composeTaskContractAttempt(
 		`assignedSkill=${taskContract.assignedSkill}`,
 		`goal=${taskContract.goal}`,
 		`rawRequest=${taskContract.rawRequest}`,
+		"",
+		"Completion protocol:",
+		`When and only when this attempt is complete, include ${DONE_CLAIM_MARKER} on its own line in your final response.`,
+		`If you could not finish, do not include ${DONE_CLAIM_MARKER}; explain the blocker instead.`,
+		...(lessonsSuffix ? ["", lessonsSuffix] : []),
 		...(failureDigest ? ["", "Previous review failure digest:", failureDigest] : []),
 	].join("\n");
+}
+
+function loopLessonsOptions(
+	taskContract: TaskContract,
+	deps: AgentRequestDeps,
+	loop: NonNullable<AgentRequestDeps["workerReviewerLoop"]>,
+) {
+	if (!deps.memory || !lessonsEnabled(taskContract, loop)) return undefined;
+	return {
+		store: deps.memory.store,
+		...(deps.now ? { now: deps.now } : {}),
+		...(loop.runPolicy?.lessons?.ttlMs !== undefined ? { ttlMs: loop.runPolicy.lessons.ttlMs } : {}),
+	};
+}
+
+function recallLessonsSuffix(
+	taskContract: TaskContract,
+	deps: AgentRequestDeps,
+	loop: NonNullable<AgentRequestDeps["workerReviewerLoop"]>,
+): string | undefined {
+	if (!deps.memory || !lessonsEnabled(taskContract, loop)) return undefined;
+	return renderLessonsSuffix(recallVerdictLessons(deps.memory.store, {
+		skill: taskContract.assignedSkill,
+		now: deps.now?.() ?? Date.now(),
+		...(loop.runPolicy?.lessons?.maxLessons !== undefined
+			? { maxLessons: loop.runPolicy.lessons.maxLessons }
+			: {}),
+	}));
+}
+
+function lessonsEnabled(
+	taskContract: TaskContract,
+	loop: NonNullable<AgentRequestDeps["workerReviewerLoop"]>,
+): boolean {
+	return taskContract.writeScope.length > 0 && loop.runPolicy?.lessons?.enabled !== false;
+}
+
+function isDoneClaim(message: AssistantMessage): boolean {
+	return message.stopReason !== "error" && assistantText(message)
+		.split(/\r?\n/)
+		.some((line) => line.trim() === DONE_CLAIM_MARKER);
 }
 
 async function promptAllowedTaskAttempt(
@@ -202,8 +297,13 @@ async function promptAllowedTaskAttempt(
 async function readAttemptDiff(
 	loop: NonNullable<AgentRequestDeps["workerReviewerLoop"]>,
 	input: { attempt: number; taskContract: TaskContract; message: AssistantMessage },
-): Promise<string> {
-	return await loop.diffSource?.(input) ?? assistantText(input.message);
+): Promise<AttemptDiff> {
+	const diff = await loop.diffSource?.(input);
+	// A plain-string source is consumer-supplied with unknown provenance; only sources
+	// that declare their origin (AttemptDiff) may claim "git".
+	if (typeof diff === "string") return { diff, diffOrigin: "custom" };
+	if (diff) return diff;
+	return { diff: assistantText(input.message), diffOrigin: "self-report" };
 }
 
 function assistantText(message: AssistantMessage): string {
@@ -234,6 +334,28 @@ function lifecycleAssistantMessage(text: string): AssistantMessage {
 		},
 		stopReason: "stop",
 		timestamp: Date.now(),
+	};
+}
+
+function modelFailureAssistantMessage(error: ModelFailureError): AssistantMessage {
+	const source = error.assistantMessage;
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: error.message }],
+		api: source?.api ?? DEFAULT_MODEL_PROFILE.api,
+		provider: source?.provider ?? DEFAULT_MODEL_PROFILE.provider,
+		model: source?.model ?? DEFAULT_MODEL_PROFILE.modelId,
+		usage: source?.usage ?? {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error",
+		errorMessage: error.message,
+		timestamp: source?.timestamp ?? Date.now(),
 	};
 }
 
@@ -363,7 +485,15 @@ async function executeTaskContractWithReceipts(
 ): Promise<TaskExecutionOutcome> {
 	const receiptCollector = deps.workerReviewerLoop?.receiptCollector;
 	receiptCollector?.markAttemptStart(0);
-	const message = await executeTaskContract(harness, taskContract);
+	let message: AssistantMessage;
+	let modelFailure: ModelFailureClassification | undefined;
+	try {
+		message = await executeTaskContract(harness, taskContract);
+	} catch (error) {
+		if (!isModelFailureError(error)) throw error;
+		message = modelFailureAssistantMessage(error);
+		modelFailure = error.classification;
+	}
 	let receipts = receiptCollector?.receiptsForAttempt(0) ?? [];
 	if (receipts.length === 0) {
 		const captured = await deps.workerReviewerLoop?.captureTaskAttemptEvidence?.({
@@ -376,6 +506,7 @@ async function executeTaskContractWithReceipts(
 	return {
 		message,
 		evidenceRefs: evidenceRefsFromReceipts(receipts),
+		...(modelFailure ? { modelFailure } : {}),
 	};
 }
 
@@ -388,14 +519,15 @@ function writeCandidateMemories(
 	rawRequest: string,
 	message: AssistantMessage,
 	now: number,
+	evidenceRefs: readonly string[] = [],
 ): UserMemoryRecord[] {
 	const memory = deps.memory;
 	if (!memory) return [];
 	const scope = memory.scope ?? DEFAULT_SCOPE;
 	const subject = memory.subject ?? DEFAULT_SUBJECT;
 	const candidates =
-		memory.extractCandidates?.({ rawRequest, message, scope, subject, now }) ??
-		extractDefaultMemoryCandidates({ rawRequest, message, scope, subject, now });
+		memory.extractCandidates?.({ rawRequest, message, scope, subject, now, evidenceRefs }) ??
+		extractDefaultMemoryCandidates({ rawRequest, message, scope, subject, now, evidenceRefs });
 	return candidates.map((candidate) => writeUserMemory(memory.store, candidate));
 }
 

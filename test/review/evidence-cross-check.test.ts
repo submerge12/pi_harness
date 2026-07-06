@@ -123,6 +123,132 @@ describe("crossCheckEvidence", () => {
 			decidedAt: 123,
 		});
 	});
+
+	it("demotes PASS to NEEDS_HUMAN when acceptance criteria are not machine-checkable", async () => {
+		const entry = await receiptWithOutput("tests ran");
+
+		const verdict = crossCheckEvidence({
+			diff: "claimed all tests pass",
+			manifest: [entry],
+			policy: { acceptanceCriteria: ["all tests pass"] },
+			blindVerdict: passBlind,
+		});
+
+		expect(verdict).toEqual({
+			verdict: "NEEDS_HUMAN",
+			reviewer: "blind-reviewer",
+			phase: "cross-check",
+			findings: [{
+				severity: "warn",
+				claim: "Reviewer PASS has unverified acceptance criterion: all tests pass",
+			}],
+			decidedAt: 123,
+		});
+	});
+
+	it("supports exit-zero criteria via successful receipts", async () => {
+		const entry = await receiptWithOutput("done");
+
+		const verdict = crossCheckEvidence({
+			diff: "claimed change",
+			manifest: [entry],
+			policy: { acceptanceCriteria: ["exit-zero"] },
+			blindVerdict: passBlind,
+		});
+
+		expect(verdict).toEqual({ ...passBlind, phase: "cross-check" });
+	});
+
+	it("supports contains-prefix criteria against captured output", async () => {
+		const entry = await receiptWithOutput("all green: ok");
+
+		const verdict = crossCheckEvidence({
+			diff: "claimed change",
+			manifest: [entry],
+			policy: { acceptanceCriteria: ["contains all green"] },
+			blindVerdict: passBlind,
+		});
+
+		expect(verdict).toEqual({ ...passBlind, phase: "cross-check" });
+	});
+
+	it("checks file-exists criteria through the injected filesystem capability", async () => {
+		const entry = await receiptWithOutput("done");
+		const checkedPaths: string[] = [];
+
+		const pass = crossCheckEvidence({
+			diff: "claimed change",
+			manifest: [entry],
+			policy: { acceptanceCriteria: ["file-exists outputs/report.md"] },
+			blindVerdict: passBlind,
+			fileExists: (path) => {
+				checkedPaths.push(path);
+				return true;
+			},
+		});
+		const fail = crossCheckEvidence({
+			diff: "claimed change",
+			manifest: [entry],
+			policy: { acceptanceCriteria: ["file-exists outputs/report.md"] },
+			blindVerdict: passBlind,
+			fileExists: () => false,
+		});
+
+		expect(pass).toEqual({ ...passBlind, phase: "cross-check" });
+		expect(checkedPaths).toEqual(["outputs/report.md"]);
+		expect(fail.verdict).toBe("FAIL");
+		expect(fail.findings[0]?.claim).toContain("file-exists outputs/report.md");
+	});
+
+	it("demotes file-exists criteria to NEEDS_HUMAN when no filesystem capability is injected", async () => {
+		const entry = await receiptWithOutput("done");
+
+		const verdict = crossCheckEvidence({
+			diff: "claimed change",
+			manifest: [entry],
+			policy: { acceptanceCriteria: ["file-exists outputs/report.md"] },
+			blindVerdict: passBlind,
+		});
+
+		expect(verdict.verdict).toBe("NEEDS_HUMAN");
+		expect(verdict.findings[0]?.claim).toContain("unverified acceptance criterion");
+	});
+
+	it("checks test-command criteria against successful receipt commands", async () => {
+		const entry = await receiptWithOutput("done");
+
+		const pass = crossCheckEvidence({
+			diff: "claimed change",
+			manifest: [entry],
+			policy: { acceptanceCriteria: ["test-command write   src/result.txt"] },
+			blindVerdict: passBlind,
+		});
+		const fail = crossCheckEvidence({
+			diff: "claimed change",
+			manifest: [entry],
+			policy: { acceptanceCriteria: ["test-command npm test"] },
+			blindVerdict: passBlind,
+		});
+
+		expect(pass).toEqual({ ...passBlind, phase: "cross-check" });
+		expect(fail.verdict).toBe("FAIL");
+		expect(fail.findings[0]?.claim).toContain("test-command npm test");
+	});
+
+	it("fails on checkable violations before demoting for unverifiable prose criteria", async () => {
+		const entry = await receiptWithOutput("mismatch");
+
+		const verdict = crossCheckEvidence({
+			diff: "claimed change",
+			manifest: [entry],
+			// The prose criterion must not mask the hard missing-evidence violation.
+			policy: { acceptanceCriteria: ["all tests pass", "src/result.txt contains ok"] },
+			blindVerdict: passBlind,
+		});
+
+		expect(verdict.verdict).toBe("FAIL");
+		expect(verdict.findings[0]?.claim).toContain("src/result.txt contains ok");
+	});
 });
 
 async function receiptWithOutput(stdout: string, options: { command?: string } = {}) {

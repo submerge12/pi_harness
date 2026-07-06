@@ -104,6 +104,87 @@ describe("human gate", () => {
 		expect(result.humanDecisions.map((decision) => decision.action)).toEqual(["resume"]);
 	});
 
+	it("ignores persisted id-less resume decisions", async () => {
+		let attempt = 0;
+		let reviewCalls = 0;
+		let requestDecisionCalls = 0;
+		const result = await runWorkerReviewerLoop({
+			taskContract,
+			trace: createInMemoryTraceSink({ runId: "human-gate-idless-persisted", now: () => 1 }),
+			checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+			ledger: createReceiptLedger(),
+			maxAttempts: 3,
+			worker: async () => {
+				attempt += 1;
+				return { doneClaim: true, diff: `attempt ${attempt}`, receipts: [receipt({ id: `receipt-${attempt}` })] };
+			},
+			reviewer: async () => {
+				reviewCalls += 1;
+				return attempt === 1 ? verdict("NEEDS_HUMAN") : verdict("PASS");
+			},
+			humanGate: {
+				persistence: {
+					savePendingHumanGate: async () => undefined,
+					loadPendingHumanGate: async () => undefined,
+					saveHumanDecision: async () => undefined,
+					loadHumanDecisions: async () => [
+						{ id: "legacy", action: "resume", reviewer: "human", decidedAt: 2 },
+					] as any,
+				},
+				requestDecision: async () => {
+					requestDecisionCalls += 1;
+					return undefined;
+				},
+			},
+		});
+
+		expect(result.state).toBe("NEEDS_HUMAN");
+		expect(result.attempts).toBe(1);
+		expect(reviewCalls).toBe(1);
+		expect(requestDecisionCalls).toBe(1);
+		expect(result.humanDecisions).toEqual([]);
+	});
+
+	it("replays exact persisted resume decisions idempotently", async () => {
+		let attempt = 0;
+		let requestDecisionCalls = 0;
+		const result = await runWorkerReviewerLoop({
+			taskContract,
+			trace: createInMemoryTraceSink({ runId: "human-gate-exact-persisted", now: () => 1 }),
+			checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+			ledger: createReceiptLedger(),
+			maxAttempts: 3,
+			worker: async () => {
+				attempt += 1;
+				return { doneClaim: true, diff: `attempt ${attempt}`, receipts: [receipt({ id: `receipt-${attempt}` })] };
+			},
+			reviewer: async () => attempt === 1 ? verdict("NEEDS_HUMAN") : verdict("PASS"),
+			humanGate: {
+				persistence: {
+					savePendingHumanGate: async () => undefined,
+					loadPendingHumanGate: async () => undefined,
+					saveHumanDecision: async () => undefined,
+					loadHumanDecisions: async () => [{
+						id: "decision-1",
+						action: "resume",
+						reviewer: "human",
+						decidedAt: 2,
+						requestId: "task-human-gate-attempt-1-human-gate",
+					}],
+				},
+				requestDecision: async () => {
+					requestDecisionCalls += 1;
+					return undefined;
+				},
+			},
+		});
+
+		expect(result.state).toBe("DONE");
+		expect(result.attempts).toBe(2);
+		expect(requestDecisionCalls).toBe(0);
+		expect(result.humanDecisions.map((decision) => decision.id)).toEqual(["decision-1"]);
+	});
+
 	it("uses RunPolicy gate tiers to require a human before a protected run starts", async () => {
 		let workerCalls = 0;
 		const result = await runWorkerReviewerLoop({

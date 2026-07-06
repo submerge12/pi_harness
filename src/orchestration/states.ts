@@ -32,6 +32,7 @@ export interface TransitionLogEntry {
 export interface TransitionContext {
 	reviewerVerdict?: "PASS";
 	readOnly?: boolean;
+	modelFailure?: string;
 }
 
 export interface TransitionLogValidationError {

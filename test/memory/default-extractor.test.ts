@@ -44,7 +44,7 @@ describe("extractDefaultMemoryCandidates", () => {
 		});
 	});
 
-	it("marks tool-evidenced facts and model inferences with separate trust levels", () => {
+	it("downgrades assistant-authored tool-evidenced facts without receipt linkage", () => {
 		const candidates = extractDefaultMemoryCandidates({
 			rawRequest: "Continue.",
 			message: assistantMessage([
@@ -56,8 +56,28 @@ describe("extractDefaultMemoryCandidates", () => {
 			now: 20,
 		});
 
-		expect(candidates.map((candidate) => candidate.trust)).toEqual(["tool_evidenced", "model_inferred"]);
+		expect(candidates.map((candidate) => candidate.trust)).toEqual(["model_inferred", "model_inferred"]);
 		expect(candidates.map((candidate) => candidate.subject)).toEqual(["project", "user"]);
+	});
+
+	it("accepts tool-evidenced facts only when linked to an actual receipt id", () => {
+		const candidates = extractDefaultMemoryCandidates({
+			rawRequest: "Continue.",
+			message: assistantMessage("tool-evidenced[receipt-1]: project.language=TypeScript"),
+			scope: "repo",
+			subject: "user",
+			now: 20,
+			evidenceRefs: ["receipt-1"],
+		});
+
+		expect(candidates).toHaveLength(1);
+		expect(candidates[0]).toMatchObject({
+			subject: "project",
+			predicate: "language",
+			object: "TypeScript",
+			trust: "tool_evidenced",
+			source: "tool evidence:receipt-1",
+		});
 	});
 
 	it("keeps model-inferred records out of lifecycle recall candidates", () => {

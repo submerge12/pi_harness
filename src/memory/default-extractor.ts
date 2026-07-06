@@ -7,6 +7,7 @@ export interface DefaultMemoryExtractorInput {
 	scope: string;
 	subject: string;
 	now: number;
+	evidenceRefs?: readonly string[];
 }
 
 export function extractDefaultMemoryCandidates(input: DefaultMemoryExtractorInput): UserMemoryRecord[] {
@@ -40,24 +41,36 @@ function extractTaggedFactMemories(
 	options: DefaultMemoryExtractorInput,
 ): UserMemoryRecord[] {
 	const records: UserMemoryRecord[] = [];
-	const pattern = /^(tool-evidenced|model-inferred):\s*([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\s*=\s*(.+)$/gim;
+	const pattern = /^(tool-evidenced|model-inferred)(?:\[([A-Za-z0-9_.:/-]+)\])?:\s*([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\s*=\s*(.+)$/gim;
 	for (const match of text.matchAll(pattern)) {
 		const tag = match[1];
-		const subject = match[2];
-		const predicate = match[3];
-		const object = cleanupObject(match[4] ?? "");
+		const receiptId = match[2];
+		const subject = match[3];
+		const predicate = match[4];
+		const object = cleanupObject(match[5] ?? "");
 		if (!subject || !predicate || !object) continue;
+		const trust = taggedFactTrust(tag, receiptId, options.evidenceRefs);
 		records.push(createRecord({
 			scope: options.scope,
 			subject,
 			predicate,
 			object,
-			source: tag === "tool-evidenced" ? "tool evidence" : "model inference",
-			trust: tag === "tool-evidenced" ? "tool_evidenced" : "model_inferred",
+			source: trust === "tool_evidenced" ? `tool evidence:${receiptId}` : "model inference",
+			trust,
 			now: options.now,
 		}));
 	}
 	return records;
+}
+
+function taggedFactTrust(
+	tag: string | undefined,
+	receiptId: string | undefined,
+	evidenceRefs: readonly string[] | undefined,
+): UserMemoryTrust {
+	if (tag !== "tool-evidenced") return "model_inferred";
+	if (!receiptId || !evidenceRefs?.includes(receiptId)) return "model_inferred";
+	return "tool_evidenced";
 }
 
 function createRecord(input: {

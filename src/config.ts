@@ -246,6 +246,7 @@ function cloneRunPolicy(runPolicy?: RunPolicy): RunPolicy | undefined {
 		...runPolicy,
 		budget: runPolicy.budget ? { ...runPolicy.budget } : undefined,
 		repairLimits: runPolicy.repairLimits ? { ...runPolicy.repairLimits } : undefined,
+		lessons: runPolicy.lessons ? { ...runPolicy.lessons } : undefined,
 		gateTiers: runPolicy.gateTiers ? { ...runPolicy.gateTiers } : undefined,
 	};
 }

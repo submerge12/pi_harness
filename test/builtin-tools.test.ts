@@ -1,10 +1,10 @@
 import { ExecutionError, FileError, err, ok } from "@earendil-works/pi-agent-core";
 import type { ExecutionEnv, FileInfo, Result } from "@earendil-works/pi-agent-core";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createEvidenceGateway, createEvidenceReceiptCollector } from "../src/evidence/index.ts";
+import { createEvidenceGateway, createEvidenceReceiptCollector, readManifest } from "../src/evidence/index.ts";
 import { createExecutionEnvCheckpointStore } from "../src/checkpoint/index.ts";
 import { createBashTool } from "../src/tools/builtin/bash.ts";
 import { createEditTool } from "../src/tools/builtin/edit.ts";
@@ -393,9 +393,7 @@ describe("built-in toolset", () => {
 		});
 
 		const result = await tool.execute("call-1", { command: "echo token=planted-secret" });
-		const manifest = JSON.parse(
-			await readFile(path.join(rootDir, "evidence", "run-bash-tool", "manifest.json"), "utf8"),
-		) as Array<Record<string, unknown>>;
+		const manifest = await readManifest(path.join(rootDir, "evidence", "run-bash-tool", "manifest.jsonl"));
 		const manifestText = JSON.stringify(manifest);
 
 		expect(result.content[0]).toMatchObject({
@@ -468,9 +466,7 @@ describe("built-in toolset", () => {
 		});
 
 		const result = await tool.execute("fetch-call", { url: "https://example.invalid/data?token=planted-secret" });
-		const manifest = JSON.parse(
-			await readFile(path.join(rootDir, "evidence", "run-fetch-tool", "manifest.json"), "utf8"),
-		) as Array<Record<string, unknown>>;
+		const manifest = await readManifest(path.join(rootDir, "evidence", "run-fetch-tool", "manifest.jsonl"));
 		const manifestText = JSON.stringify(manifest);
 
 		expect(result.content[0]).toMatchObject({ text: expect.stringContaining("api_key=[REDACTED]") });

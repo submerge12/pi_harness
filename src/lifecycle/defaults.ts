@@ -5,6 +5,7 @@ import { InMemoryUserMemoryStore } from "../memory/index.ts";
 import type { IntakeOptions } from "../intake/index.ts";
 import type { RoutingOptions } from "../routing/index.ts";
 import type { TraceSink } from "../trace/index.ts";
+import { configuredTools } from "../tools/metadata.ts";
 import {
 	createSkillCardRegistry,
 	type SkillCard,
@@ -153,8 +154,7 @@ function isReadonlyStringMap(
 function declaredToolsFromConfig(
 	config: Pick<ResolvedHarnessConfig, "tools" | "toolRegistrations">,
 ): DeclaredToolPrefixEntry[] {
-	const fromTools = config.tools ?? config.toolRegistrations?.map((registration) => registration.tool) ?? [];
-	return fromTools.map((tool) => ({
+	return configuredTools(config).map((tool) => ({
 		name: tool.name,
 		...("description" in tool && typeof tool.description === "string" ? { description: tool.description } : {}),
 	}));

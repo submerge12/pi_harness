@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { createEvidenceGateway, type EvidenceAllowedDecision } from "../../src/evidence/index.ts";
+import { createEvidenceGateway, readManifest, type EvidenceAllowedDecision } from "../../src/evidence/index.ts";
 
 type ExecResult = {
 	stdout: string;
@@ -13,10 +13,6 @@ type ExecResult = {
 
 function allowed(ruleId = "rule-1"): EvidenceAllowedDecision {
 	return { level: "allow", ruleId };
-}
-
-async function readJson<T>(path: string): Promise<T> {
-	return JSON.parse(await readFile(path, "utf8")) as T;
 }
 
 async function createRoot(): Promise<string> {
@@ -62,9 +58,7 @@ describe("evidence gateway", () => {
 			subject: "repo:demo",
 			allowed: allowed("command-redaction-rule"),
 		});
-		const manifest = await readJson<[typeof entry]>(
-			join(rootDir, "evidence", "run-command-redaction", "manifest.json"),
-		);
+		const manifest = await readManifest(join(rootDir, "evidence", "run-command-redaction", "manifest.jsonl")) as [typeof entry];
 		const manifestText = JSON.stringify(manifest);
 
 		expect(manifest[0].command).toContain("Authorization: [REDACTED]");
@@ -97,7 +91,7 @@ describe("evidence gateway", () => {
 
 		const stdout = await readFile(join(rootDir, entry.stdoutRef), "utf8");
 		const stderr = await readFile(join(rootDir, entry.stderrRef), "utf8");
-		const manifest = await readJson<[typeof entry]>(join(rootDir, "evidence", "run-1", "manifest.json"));
+		const manifest = await readManifest(join(rootDir, "evidence", "run-1", "manifest.jsonl")) as [typeof entry];
 
 		expect(stdout).toContain("token=[REDACTED]");
 		expect(stdout).toContain("Authorization: [REDACTED]");
@@ -142,7 +136,7 @@ describe("evidence gateway", () => {
 			writeScope: ["src/token=scope-secret"],
 			actualWritePaths: ["out/api_key=actual-secret.txt"],
 		});
-		const manifest = await readJson<[typeof entry]>(join(rootDir, "evidence", "run-path-redaction", "manifest.json"));
+		const manifest = await readManifest(join(rootDir, "evidence", "run-path-redaction", "manifest.jsonl")) as [typeof entry];
 		const manifestText = JSON.stringify(manifest);
 
 		expect(manifest[0].writeScope).toEqual(["src/token=[REDACTED]"]);
@@ -175,9 +169,10 @@ describe("evidence gateway", () => {
 			subject: "repo:demo",
 			allowed: allowed("dag-rule"),
 		});
-		const manifest = await readJson<[typeof attributed, typeof unattributed]>(
-			join(rootDir, "evidence", "run-dag-attribution", "manifest.json"),
-		);
+		const manifest = await readManifest(join(rootDir, "evidence", "run-dag-attribution", "manifest.jsonl")) as [
+			typeof attributed,
+			typeof unattributed,
+		];
 
 		expect(manifest[0]).toMatchObject({
 			nodeId: "node-1",
@@ -274,6 +269,36 @@ describe("evidence gateway", () => {
 		expect(stdout.toString("utf8")).not.toContain("secret-");
 	});
 
+	test("truncates text at a UTF-8 character boundary and hashes persisted bytes", async () => {
+		const rootDir = await createRoot();
+		const gateway = createEvidenceGateway({
+			env: fakeEnv({
+				stdout: "abc\u{1F642}def",
+				stderr: "",
+				exitCode: 0,
+			}),
+			rootDir,
+			runId: "run-utf8-truncate",
+			now: () => new Date("2026-06-24T05:30:00.000Z"),
+			maxOutputBytes: 6,
+		});
+
+		const entry = await gateway.captureCommand({
+			id: "cmd-utf8",
+			command: "print-secret",
+			subject: "repo:demo",
+			allowed: allowed("utf8-rule"),
+		});
+
+		const stdout = await readFile(join(rootDir, entry.stdoutRef));
+		const persisted = stdout.toString("utf8");
+
+		expect(entry.truncated).toBe(true);
+		expect(persisted).toBe("abc");
+		expect(persisted).not.toContain("\uFFFD");
+		expect(entry.sha256).toBe(createHash("sha256").update(stdout).digest("hex"));
+	});
+
 	test("appends manifest entries in capture order with injected timestamps", async () => {
 		const rootDir = await createRoot();
 		const timestamps = [
@@ -300,7 +325,7 @@ describe("evidence gateway", () => {
 			allowed: allowed("order-rule-b"),
 		});
 
-		const manifest = await readJson<Array<typeof first>>(join(rootDir, "evidence", "run-order", "manifest.json"));
+		const manifest = await readManifest(join(rootDir, "evidence", "run-order", "manifest.jsonl")) as Array<typeof first>;
 		expect(Array.isArray(manifest)).toBe(true);
 		expect(manifest.map((entry) => entry.id)).toEqual(["cmd-a", "cmd-b"]);
 		expect(manifest.map((entry) => entry.capturedAt)).toEqual([

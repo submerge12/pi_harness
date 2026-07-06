@@ -77,6 +77,20 @@ describe("cache report pruning telemetry", () => {
 		);
 	});
 
+	test("cache_report_aligns_decisions_by_explicit_turn_index_only", () => {
+		const report = new CacheReportTracker();
+
+		report.recordDecision(decision("session-affinity"), 99);
+		report.recordDecision(decision("automatic-prefix"), 2);
+		report.recordTurn(turn(1, 0.4));
+		report.recordTurn(turn(2, 0.5));
+
+		const entries = report.getEntries();
+
+		expect(entries.map((entry) => entry.turnIndex)).toEqual([2]);
+		expect(entries[0]?.expectedStrategy).toBe("automatic-prefix");
+	});
+
 	test("cache_report_warns_when_post_prune_hit_rate_stays_low_past_two_turns", () => {
 		const report = new CacheReportTracker({
 			pruneRecoveryHitRateThreshold: 0.5,

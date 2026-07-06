@@ -6,6 +6,7 @@ import { CacheStrategyEngine } from "../src/cache/strategy-engine.ts";
 import { getProviderCacheProfile } from "../src/cache/profiles.ts";
 import { CompactionPolicy, type CompactionPolicyHarness } from "../src/context/compaction-policy.ts";
 import { ContextManager } from "../src/context/manager.ts";
+import { estimateTextTokens } from "../src/context/token-estimator.ts";
 import { computeTokenBudget } from "../src/context/token-budget.ts";
 
 function userMessage(text: string): AgentMessage {
@@ -152,6 +153,7 @@ describe("context and cache management", () => {
 	});
 
 	it("preserves assistant tool-call and tool-result pairs while trimming", () => {
+		const previousUser = userMessage(`old-b:${"x".repeat(2000)}`);
 		const toolCall = assistantToolCallMessage("call-1", `call:${"x".repeat(20)}`);
 		const toolResult = toolResultMessage("call-1", `result:${"x".repeat(20)}`);
 		const finalAnswer = assistantMessage(`done:${"x".repeat(20)}`);
@@ -162,14 +164,34 @@ describe("context and cache management", () => {
 		const result = manager.handleContext({
 			messages: [
 				userMessage(`old-a:${"x".repeat(2000)}`),
-				userMessage(`old-b:${"x".repeat(2000)}`),
+				previousUser,
 				toolCall,
 				toolResult,
 				finalAnswer,
 			],
 		});
 
-		expect(result.messages).toEqual([toolCall, toolResult, finalAnswer]);
+		expect(result.messages).toEqual([previousUser, toolCall, toolResult, finalAnswer]);
+	});
+
+	it("never starts a trimmed context with assistant or tool-result messages", () => {
+		const recentUser = userMessage("continue from the latest instruction");
+		const manager = new ContextManager({
+			contextWindow: 3,
+		});
+
+		const result = manager.handleContext({
+			messages: [
+				userMessage(`old:${"x".repeat(2000)}`),
+				assistantToolCallMessage("call-1", `call:${"x".repeat(20)}`),
+				toolResultMessage("call-1", `result:${"x".repeat(20)}`),
+				assistantMessage(`done:${"x".repeat(20)}`),
+				recentUser,
+			],
+		});
+
+		expect(result.messages.at(0)?.role).toBe("user");
+		expect(result.messages).toContain(recentUser);
 	});
 
 	it("compacts after turn end when high-water policy is exceeded", async () => {
@@ -199,6 +221,58 @@ describe("context and cache management", () => {
 		});
 
 		expect(compactInstructions).toBe("keep tool outputs summarized");
+	});
+
+	it("calibrates CJK text against real-tokenizer bounds instead of chars/4", () => {
+		// Varied zh transcript (not a repeated char, which BPE tokenizers collapse).
+		// Mainstream tokenizers emit ~0.6 (DeepSeek) to ~1.7 (cl100k) tokens per Chinese
+		// character; the estimator must land inside that bracket, and never anywhere near
+		// the legacy chars/4 heuristic that undercounted zh sessions 3-4x.
+		const sentences = [
+			"今天的午餐计划包括潮汕牛肉汤和一份糙米饭。",
+			"用户偏好低钠饮食，每日钠摄入需要控制在两千毫克以内。",
+			"蛋白质目标是每天一百四十克，主要来源为鱼类和豆制品。",
+			"晚餐建议清蒸鲈鱼配西兰花，热量大约五百二十千卡。",
+			"如果周末外出就餐，应提前查看菜单并估算营养成分。",
+			"本周的采购清单已经根据七天的膳食计划自动生成。",
+			"运动日的碳水化合物配比可以适当上调百分之十左右。",
+			"睡前两小时避免进食，有助于维持稳定的血糖水平。",
+		];
+		const transcript = Array.from({ length: 50 }, (_, index) => sentences[index % sentences.length]).join("");
+		const charCount = Array.from(transcript).length;
+		const estimate = estimateTextTokens(transcript);
+		const legacyCharsOver4 = Math.ceil(transcript.length / 4);
+
+		expect(estimate).toBeGreaterThanOrEqual(charCount * 0.5);
+		expect(estimate).toBeLessThanOrEqual(charCount * 1.8);
+		expect(estimate).toBeGreaterThanOrEqual(legacyCharsOver4 * 3);
+	});
+
+	it("compacts CJK-heavy sessions at the intended budget", async () => {
+		let turnEndHandler: ((event: { messages: AgentMessage[] }) => Promise<void> | void) | undefined;
+		let compactCalls = 0;
+		const harness: CompactionPolicyHarness = {
+			on(_type, handler) {
+				turnEndHandler = handler;
+				return () => {
+					turnEndHandler = undefined;
+				};
+			},
+			async compact() {
+				compactCalls += 1;
+			},
+		};
+		const policy = new CompactionPolicy({
+			contextWindow: 12_000,
+			highWaterRatio: 0.85,
+		});
+
+		policy.bind(harness);
+		await turnEndHandler?.({
+			messages: [userMessage("汉".repeat(10_000))],
+		});
+
+		expect(compactCalls).toBe(1);
 	});
 
 	it("does not compact when disabled", async () => {

@@ -11,9 +11,24 @@ describe("model failure classifier", () => {
 		expect(classifyModelFailure("抱歉，我无法完成这个任务。", deepSeekV4ProProfile)?.kind).toBe("refusal");
 	});
 
-	it("classifies degenerate repetition loops", () => {
+	it("classifies degenerate repetition loops for profiles that opt in", () => {
 		const phrase = "The next step is to check the configuration file. ";
 		expect(classifyModelFailure(phrase.repeat(8), deepSeekV4ProProfile)?.kind).toBe("loop");
+	});
+
+	it("does not classify repetitive output as a loop unless the profile opts in", () => {
+		// Legitimate repetitive output (table rows, log lines) must not be a fatal loop by default.
+		const tableRow = "| region-a | 42 | 42 | 42 | ok |\n";
+		const optedOut = { failureSignatures: { refusal: [], loop: [], truncation: [] } };
+		expect(classifyModelFailure(tableRow.repeat(20), optedOut)).toBeUndefined();
+	});
+
+	it("bounds loop detection on long non-repeating output", () => {
+		const text = Array.from({ length: 50_000 }, (_, index) => `token-${index}`).join(" ");
+		const startedAt = performance.now();
+
+		expect(classifyModelFailure(text, deepSeekV4ProProfile)).toBeUndefined();
+		expect(performance.now() - startedAt).toBeLessThan(1_000);
 	});
 
 	it("classifies an unterminated JSON fence as truncation", () => {

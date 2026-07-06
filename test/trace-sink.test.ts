@@ -1,10 +1,15 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { clearKnownSecretsForTesting, registerKnownSecret } from "../src/redaction/core.ts";
 import { createFileTraceSink, createInMemoryTraceSink } from "../src/trace/index.ts";
 
 describe("trace sink", () => {
+	afterEach(() => {
+		clearKnownSecretsForTesting();
+	});
+
 	it("orders in-memory events and redacts secret fields", async () => {
 		const trace = createInMemoryTraceSink({ runId: "trace-redaction", now: () => 42 });
 
@@ -24,7 +29,7 @@ describe("trace sink", () => {
 				seq: 1,
 				type: "review-verdict",
 				at: 42,
-				data: { header: "Authorization: Bearer [REDACTED]" },
+				data: { header: "Authorization: [REDACTED]" },
 			},
 		]);
 	});
@@ -45,5 +50,17 @@ describe("trace sink", () => {
 			at: 7,
 			data: { password: "[REDACTED]" },
 		});
+	});
+
+	it("redacts registered bare secret values", async () => {
+		registerKnownSecret("sk-test-known-trace-secret");
+		const trace = createInMemoryTraceSink({ runId: "trace-known-secret", now: () => 42 });
+
+		await trace.append({
+			type: "worker-attempt",
+			data: { diff: "added sk-test-known-trace-secret to output" },
+		});
+
+		expect(trace.events()[0]?.data).toEqual({ diff: "added [REDACTED] to output" });
 	});
 });

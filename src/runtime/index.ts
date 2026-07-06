@@ -1,7 +1,9 @@
 export {
 	normalizedResultSchema,
+	normalizedModelFailureErrorSchema,
 	normalizedTestResultSchema,
 	normalizedUsageSchema,
+	type NormalizedModelFailureError,
 	type NormalizedResult,
 	type NormalizedTestResult,
 	type NormalizedUsage,

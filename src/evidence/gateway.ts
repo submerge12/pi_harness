@@ -142,7 +142,7 @@ async function persistEvidence(
 		enumerable: false,
 	});
 
-	await appendManifestEntry(join(options.rootDir, "evidence", options.runId, "manifest.json"), entry);
+	await appendManifestEntry(join(options.rootDir, "evidence", options.runId, "manifest.jsonl"), entry);
 	options.onEntry?.(entry);
 	return entry;
 }
@@ -166,16 +166,28 @@ function redactStringList(values: readonly string[] | undefined): { values?: str
 
 function prepareOutput(text: string, maxOutputBytes: number) {
 	const redacted = redactCommandOutput(text);
-	const bytes = Buffer.from(redacted.text, "utf8");
-	const truncated = bytes.byteLength > maxOutputBytes;
-	const outputBytes = truncated ? bytes.subarray(0, maxOutputBytes) : bytes;
+	const truncatedText = truncateUtf8AtCharBoundary(redacted.text, maxOutputBytes);
+	const outputBytes = Buffer.from(truncatedText, "utf8");
+	const truncated = Buffer.byteLength(redacted.text, "utf8") > outputBytes.byteLength;
 	return {
 		bytes: outputBytes,
-		text: outputBytes.toString("utf8"),
+		text: truncatedText,
 		binary: containsBinaryOutput(text),
 		truncated,
 		redactions: redacted.redactions,
 	};
+}
+
+function truncateUtf8AtCharBoundary(text: string, maxOutputBytes: number): string {
+	let bytes = 0;
+	let end = 0;
+	for (const char of text) {
+		const charBytes = Buffer.byteLength(char, "utf8");
+		if (bytes + charBytes > maxOutputBytes) break;
+		bytes += charBytes;
+		end += char.length;
+	}
+	return text.slice(0, end);
 }
 
 function assertSafePathSegment(value: string, label: string): void {

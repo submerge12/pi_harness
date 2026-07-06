@@ -1,4 +1,5 @@
 import { getEvidenceCapturedOutput, type EvidenceManifestEntry } from "../evidence/index.ts";
+import { parseAcceptanceCriterion, type AcceptanceCriterion } from "./acceptance-criteria.ts";
 import type { ReviewCrossCheckInput, ReviewVerdict } from "./types.ts";
 
 export function crossCheckEvidence(input: ReviewCrossCheckInput): ReviewVerdict {
@@ -15,12 +16,65 @@ export function crossCheckEvidence(input: ReviewCrossCheckInput): ReviewVerdict 
 		return failCrossCheck(blindVerdict, `Reviewer PASS includes unsuccessful receipt ${failedReceipt.id}.`);
 	}
 
-	const unsupportedCriterion = firstUnsupportedContainsCriterion(acceptanceCriteria(input.policy), entries);
-	if (unsupportedCriterion) {
-		return failCrossCheck(blindVerdict, `Reviewer PASS lacks evidence for acceptance criterion: ${unsupportedCriterion}`);
+	const results = acceptanceCriteria(input.policy)
+		.map(parseAcceptanceCriterion)
+		.map((criterion) => ({ criterion, supported: checkCriterion(criterion, entries, input) }));
+
+	// Hard violations of checkable criteria FAIL (auto-repair path) and take precedence
+	// over unverifiable criteria demoting to NEEDS_HUMAN — a prose criterion must not
+	// mask missing evidence.
+	const violated = results.find((result) => result.supported === false);
+	if (violated) {
+		return failCrossCheck(blindVerdict, `Reviewer PASS lacks evidence for acceptance criterion: ${violated.criterion.raw}`);
+	}
+
+	const unverified = results.find((result) => result.supported === undefined);
+	if (unverified) {
+		return humanCrossCheck(blindVerdict, `Reviewer PASS has unverified acceptance criterion: ${unverified.criterion.raw}`);
 	}
 
 	return { ...blindVerdict, phase: "cross-check" };
+}
+
+/** true = evidenced, false = checkable but unsupported, undefined = not machine-checkable here. */
+function checkCriterion(
+	criterion: AcceptanceCriterion,
+	entries: readonly EvidenceManifestEntry[],
+	input: Pick<ReviewCrossCheckInput, "fileExists">,
+): boolean | undefined {
+	switch (criterion.kind) {
+		case "free-text":
+			return undefined;
+		case "exit-zero":
+			// The receipts above are already verified allow+exit-0; assert independently anyway.
+			return entries.length > 0 && entries.every((entry) => entry.exitCode === 0);
+		case "contains":
+			return outputCorpus(entries).includes(criterion.text.toLowerCase());
+		case "file-exists":
+			// Without an injected filesystem capability the criterion cannot be verified.
+			return input.fileExists ? input.fileExists(criterion.path) : undefined;
+		case "test-command":
+			return entries.some(
+				(entry) =>
+					entry.allowed.level === "allow" &&
+					entry.exitCode === 0 &&
+					normalizeCommand(entry.command) === normalizeCommand(criterion.command),
+			);
+	}
+}
+
+function normalizeCommand(command: string): string {
+	return command.trim().replace(/\s+/g, " ");
+}
+
+function outputCorpus(entries: readonly EvidenceManifestEntry[]): string {
+	return entries
+		.flatMap((entry) => {
+			const output = getEvidenceCapturedOutput(entry);
+			return output ? [output.stdout, output.stderr] : [];
+		})
+		.join("\n")
+		.toLowerCase();
 }
 
 function failCrossCheck(blindVerdict: ReviewVerdict, claim: string): ReviewVerdict {
@@ -29,27 +83,20 @@ function failCrossCheck(blindVerdict: ReviewVerdict, claim: string): ReviewVerdi
 		reviewer: blindVerdict.reviewer,
 		phase: "cross-check",
 		findings: [{ severity: "blocker", claim }],
+		...(blindVerdict.diffOrigin ? { diffOrigin: blindVerdict.diffOrigin } : {}),
 		decidedAt: blindVerdict.decidedAt,
 	};
 }
 
-function firstUnsupportedContainsCriterion(
-	criteria: readonly string[],
-	entries: readonly EvidenceManifestEntry[],
-): string | undefined {
-	const corpus = entries
-		.flatMap((entry) => {
-			const output = getEvidenceCapturedOutput(entry);
-			return output ? [output.stdout, output.stderr] : [];
-		})
-		.join("\n")
-		.toLowerCase();
-
-	for (const criterion of criteria) {
-		const required = /\bcontains\s+([A-Za-z0-9._-]+)/i.exec(criterion)?.[1];
-		if (required && !corpus.includes(required.toLowerCase())) return criterion;
-	}
-	return undefined;
+function humanCrossCheck(blindVerdict: ReviewVerdict, claim: string): ReviewVerdict {
+	return {
+		verdict: "NEEDS_HUMAN",
+		reviewer: blindVerdict.reviewer,
+		phase: "cross-check",
+		findings: [{ severity: "warn", claim }],
+		...(blindVerdict.diffOrigin ? { diffOrigin: blindVerdict.diffOrigin } : {}),
+		decidedAt: blindVerdict.decidedAt,
+	};
 }
 
 function acceptanceCriteria(policy: unknown): readonly string[] {

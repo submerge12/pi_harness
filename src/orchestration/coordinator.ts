@@ -2,12 +2,16 @@ import type { TaskContract } from "../contract/index.ts";
 import type { CheckpointStore } from "../checkpoint/index.ts";
 import type { EvidenceManifestEntry } from "../evidence/index.ts";
 import type { CompletionGateFailure, ReceiptLedger } from "../feedback/ledger.ts";
+import { writeVerdictLessons } from "../feedback/lessons.ts";
 import { buildFailureDigest } from "../feedback/verdict-digest.ts";
+import type { InMemoryUserMemoryStore } from "../memory/index.ts";
 import type { BudgetDecision } from "../observability/budget.ts";
+import type { ModelFailureClassification } from "../model-adapters/index.ts";
 import type { RunPolicy } from "../policy/index.ts";
-import type { ReviewVerdict, ReviewerInput } from "../review/index.ts";
+import type { ReviewDiffOrigin, ReviewVerdict, ReviewerInput } from "../review/index.ts";
 import type { TraceSink } from "../trace/index.ts";
 import type { HumanDecision, HumanGateRequest, LoopPersistence } from "./persistence.ts";
+import { findHumanDecisionForRequest } from "./human-gate-decisions.ts";
 import { transition, type RunState, type TransitionContext } from "./states.ts";
 
 export interface WorkerAttemptInput {
@@ -21,8 +25,10 @@ export interface WorkerAttemptInput {
 export interface WorkerAttemptResult {
 	doneClaim: boolean;
 	diff: string;
+	diffOrigin?: ReviewDiffOrigin;
 	receipts: readonly EvidenceManifestEntry[];
 	workerTranscript?: string;
+	modelFailure?: ModelFailureClassification;
 }
 
 export interface WorkerReviewInput {
@@ -47,10 +53,17 @@ export interface WorkerReviewerLoopOptions {
 	budget?: WorkerReviewerBudget;
 	policy?: unknown;
 	runPolicy?: RunPolicy;
+	lessons?: WorkerReviewerLessonsOptions;
 	humanGate?: {
 		requestDecision(request: HumanGateRequest): Promise<HumanDecision | undefined> | HumanDecision | undefined;
 		persistence?: LoopPersistence;
 	};
+}
+
+export interface WorkerReviewerLessonsOptions {
+	store: InMemoryUserMemoryStore;
+	now?: () => number;
+	ttlMs?: number;
 }
 
 export interface WorkerReviewerLoopResult {
@@ -62,6 +75,7 @@ export interface WorkerReviewerLoopResult {
 	humanGateRequests: readonly HumanGateRequest[];
 	humanDecisions: readonly HumanDecision[];
 	rewinds: number;
+	modelFailure?: ModelFailureClassification;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -111,6 +125,22 @@ export async function runWorkerReviewerLoop(
 		});
 		await options.trace.append({ type: "worker-attempt", data: workerTraceData(1, workerResult) });
 		receipts.push(...workerResult.receipts);
+		if (workerResult.modelFailure) {
+			state = await recordTransition(options.trace, state, "FAILED", {
+				modelFailure: workerResult.modelFailure.kind,
+			});
+			return {
+				state: terminalState(state),
+				attempts: 1,
+				reviewVerdicts,
+				completionGateFailures,
+				receipts,
+				humanGateRequests,
+				humanDecisions,
+				rewinds,
+				modelFailure: workerResult.modelFailure,
+			};
+		}
 		state = await recordTransition(options.trace, state, "DONE", { readOnly: true });
 			return {
 				state: terminalState(state),
@@ -147,6 +177,7 @@ export async function runWorkerReviewerLoop(
 		options.checkpoint.beginAttempt?.(attempt);
 		let workerResult: WorkerAttemptResult;
 		try {
+			await options.checkpoint.baselineAttempt?.(attempt, options.taskContract.writeScope);
 			workerResult = await options.worker({
 				taskContract: options.taskContract,
 				attempt,
@@ -157,14 +188,37 @@ export async function runWorkerReviewerLoop(
 		} finally {
 			options.checkpoint.finishAttempt?.();
 		}
-		for (const receipt of workerResult.receipts) {
-			for (const path of receipt.actualWritePaths ?? []) {
-				await options.checkpoint.snapshot(attempt, path);
+		if (!options.checkpoint.baselineAttempt) {
+			for (const receipt of workerResult.receipts) {
+				for (const path of receipt.actualWritePaths ?? []) {
+					await options.checkpoint.snapshot(attempt, path);
+				}
 			}
 		}
 		receipts.push(...workerResult.receipts);
 		options.ledger.recordAttempt(attempt, workerResult.receipts);
 		await options.trace.append({ type: "worker-attempt", data: workerTraceData(attempt, workerResult) });
+		if (workerResult.modelFailure) {
+			// Terminal failure still restores the pre-attempt baseline: tools may have
+			// mutated files before the model failed, and FAILED must not leave them dirty.
+			await options.checkpoint.restore(attempt);
+			await options.trace.append({ type: "rewind", data: { fromAttempt: attempt, reason: "model-failure" } });
+			rewinds += 1;
+			state = await recordTransition(options.trace, state, "FAILED", {
+				modelFailure: workerResult.modelFailure.kind,
+			});
+			return {
+				state: terminalState(state),
+				attempts: attempt,
+				reviewVerdicts,
+				completionGateFailures,
+				receipts,
+				humanGateRequests,
+				humanDecisions,
+				rewinds,
+				modelFailure: workerResult.modelFailure,
+			};
+		}
 
 		const completion = options.ledger.checkCompletion({
 			taskContract: options.taskContract,
@@ -207,17 +261,19 @@ export async function runWorkerReviewerLoop(
 		state = await recordTransition(options.trace, state, "REVIEWING");
 		const reviewerInput: ReviewerInput = {
 			diff: workerResult.diff,
+			diffOrigin: workerResult.diffOrigin,
 			evidenceManifest: completion.acceptedReceipts,
 			acceptanceCriteria: acceptanceCriteria(options.taskContract),
 			policy: options.policy ?? {},
 		};
-		const verdict = await options.reviewer({
+		const verdict = stampDiffOrigin(await options.reviewer({
 			attempt,
 			input: reviewerInput,
 			receipts: completion.acceptedReceipts,
-		});
+		}), workerResult.diffOrigin);
 		reviewVerdicts.push(verdict);
 		await options.trace.append({ type: "review-verdict", data: { attempt, verdict } });
+		writeFailureLessons(options, verdict);
 
 		if (verdict.verdict === "PASS") {
 			state = await recordTransition(options.trace, state, "DONE", { reviewerVerdict: "PASS" });
@@ -354,10 +410,7 @@ async function findPersistedDecision(
 	requestId: string,
 ): Promise<HumanDecision | undefined> {
 	const decisions = await persistence?.loadHumanDecisions() ?? [];
-	return decisions.find((decision) =>
-		(decision.requestId === requestId || decision.requestId === undefined) &&
-		(decision.action === "resume" || decision.action === "abort")
-	);
+	return findHumanDecisionForRequest(decisions, requestId);
 }
 
 function syntheticHumanVerdict(claim: string): ReviewVerdict {
@@ -368,6 +421,11 @@ function syntheticHumanVerdict(claim: string): ReviewVerdict {
 		findings: [{ severity: "blocker", claim }],
 		decidedAt: Date.now(),
 	};
+}
+
+function stampDiffOrigin(verdict: ReviewVerdict, diffOrigin: ReviewDiffOrigin | undefined): ReviewVerdict {
+	if (!diffOrigin) return verdict;
+	return { ...verdict, diffOrigin };
 }
 
 function terminalState(state: RunState): WorkerReviewerLoopResult["state"] {
@@ -418,7 +476,19 @@ function workerTraceData(attempt: number, result: WorkerAttemptResult): Record<s
 		attempt,
 		doneClaim: result.doneClaim,
 		diff: result.diff,
+		diffOrigin: result.diffOrigin,
 		receipts: result.receipts.map((receipt) => receipt.id),
+		modelFailure: result.modelFailure,
 	};
+}
+
+function writeFailureLessons(options: WorkerReviewerLoopOptions, verdict: ReviewVerdict): void {
+	if (verdict.verdict !== "FAIL" || !options.lessons) return;
+	writeVerdictLessons(options.lessons.store, {
+		taskContract: options.taskContract,
+		verdicts: [verdict],
+		now: options.lessons.now?.() ?? Date.now(),
+		ttlMs: options.lessons.ttlMs,
+	});
 }
 

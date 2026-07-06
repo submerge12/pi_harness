@@ -1,6 +1,6 @@
 import type { AgentHarness, AgentMessage, ContextResult } from "@earendil-works/pi-agent-core";
-import { estimateContextTokens } from "@earendil-works/pi-agent-core";
 import type { TokenBudgetRatios } from "./token-budget.ts";
+import { estimateContextTokens } from "./token-estimator.ts";
 
 export interface ContextManagerOptions {
 	contextWindow: number;
@@ -67,7 +67,28 @@ export class ContextManager {
 			selectedTokens += chunk.tokens;
 		}
 
-		return messages.slice(selectedStart);
+		return messages.slice(this.validContextStart(messages, selectedStart));
+	}
+
+	private validContextStart(messages: AgentMessage[], selectedStart: number): number {
+		const selectedRole = this.messageRole(messages[selectedStart]);
+		if (!this.isInvalidLeadingRole(selectedRole)) {
+			return selectedStart;
+		}
+
+		for (let index = selectedStart - 1; index >= 0; index--) {
+			const role = this.messageRole(messages[index]);
+			if (role === "system" || role === "user") {
+				return index;
+			}
+		}
+
+		for (let index = selectedStart; index < messages.length; index++) {
+			if (!this.isInvalidLeadingRole(this.messageRole(messages[index]))) {
+				return index;
+			}
+		}
+		return messages.length;
 	}
 
 	private buildMessageChunks(messages: AgentMessage[], messageTokens: number[]): MessageChunk[] {
@@ -161,6 +182,14 @@ export class ContextManager {
 	private isAssistantResponseWithoutToolCalls(message: AgentMessage | undefined): boolean {
 		const record = asRecord(message);
 		return record?.role === "assistant" && this.getAssistantToolCallIds(message).length === 0;
+	}
+
+	private messageRole(message: AgentMessage | undefined): unknown {
+		return asRecord(message)?.role;
+	}
+
+	private isInvalidLeadingRole(role: unknown): boolean {
+		return role === "assistant" || role === "tool" || role === "toolResult";
 	}
 }
 

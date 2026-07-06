@@ -27,6 +27,20 @@ describe("normalizedResultSchema", () => {
 		})).toBe(true);
 
 		expect(Value.Check(normalizedResultSchema, {
+			status: "failed",
+			testResults: [],
+			evidenceRefs: [],
+			usage: { inputTokens: 10, outputTokens: 4, costUsd: 0.01 },
+			message: "Model output classified as refusal by profile failure signatures.",
+			error: {
+				type: "model_failure",
+				kind: "refusal",
+				pattern: "cannot",
+				retryClassification: "fatal",
+			},
+		})).toBe(true);
+
+		expect(Value.Check(normalizedResultSchema, {
 			status: "done",
 			testResults: [],
 			evidenceRefs: [],

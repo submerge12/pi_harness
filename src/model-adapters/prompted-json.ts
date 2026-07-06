@@ -1,10 +1,18 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Message, TextContent, ToolCall, UserMessage } from "@earendil-works/pi-ai";
 import type { ModelProfile, ModelPromptDialect } from "../model-profiles/types.ts";
+import { PermissionGate } from "../tools/permission.ts";
+import { ToolRegistry } from "../tools/registry.ts";
+import type { PermissionGateOptions, PermissionPolicy, ToolRegistration } from "../tools/types.ts";
 
 export interface PromptedJsonToolCall {
 	name: string;
 	arguments: Record<string, unknown>;
+}
+
+interface PromptedJsonParseResult {
+	calls: PromptedJsonToolCall[];
+	malformedToolJson: boolean;
 }
 
 const fencedJsonBlock = /```(?:json)?\s*\n?([\s\S]*?)```/g;
@@ -43,7 +51,12 @@ export function renderPromptedJsonToolInstructions(
 
 /** Extracts prompted tool calls from prose containing fenced JSON blocks. Non-tool-call JSON blocks are ignored. */
 export function parsePromptedJsonToolCalls(text: string): PromptedJsonToolCall[] {
+	return parsePromptedJsonToolCallBlocks(text).calls;
+}
+
+function parsePromptedJsonToolCallBlocks(text: string): PromptedJsonParseResult {
 	const calls: PromptedJsonToolCall[] = [];
+	let malformedToolJson = false;
 	for (const match of text.matchAll(fencedJsonBlock)) {
 		const body = match[1]?.trim();
 		if (!body) continue;
@@ -51,24 +64,33 @@ export function parsePromptedJsonToolCalls(text: string): PromptedJsonToolCall[]
 		try {
 			parsed = JSON.parse(body);
 		} catch {
+			if (looksLikeToolJsonText(body)) malformedToolJson = true;
 			continue;
 		}
 		const call = toPromptedToolCall(parsed);
 		if (call) calls.push(call);
+		else if (looksLikeToolJsonObject(parsed)) malformedToolJson = true;
 	}
-	return calls;
+	return { calls, malformedToolJson };
 }
 
 function toPromptedToolCall(value: unknown): PromptedJsonToolCall | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 	const record = value as Record<string, unknown>;
-	const nested = record.tool_call;
-	if (typeof nested === "object" && nested !== null) return toPromptedToolCall(nested);
-	const name = typeof record.tool === "string" ? record.tool : typeof record.name === "string" ? record.name : undefined;
-	if (!name) return undefined;
-	const args = record.arguments ?? record.parameters ?? {};
+	if (typeof record.tool !== "string") return undefined;
+	const args = record.arguments;
 	if (typeof args !== "object" || args === null || Array.isArray(args)) return undefined;
-	return { name, arguments: args as Record<string, unknown> };
+	return { name: record.tool, arguments: args as Record<string, unknown> };
+}
+
+function looksLikeToolJsonText(text: string): boolean {
+	return /"tool"\s*:|tool_call|"name"\s*:|"arguments"\s*:|"parameters"\s*:/.test(text);
+}
+
+function looksLikeToolJsonObject(value: unknown): boolean {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const record = value as Record<string, unknown>;
+	return "tool" in record || "tool_call" in record || "name" in record || "arguments" in record || "parameters" in record;
 }
 
 /**
@@ -109,6 +131,14 @@ export interface PromptedJsonCompletionInput {
 
 export type PromptedJsonCompletion = (input: PromptedJsonCompletionInput) => Promise<AssistantMessage>;
 
+export type PromptedJsonPermission =
+	| { mode: "trusted-in-memory-tools" }
+	| (PermissionGateOptions & {
+			mode: "permission-gate";
+			policy: PermissionPolicy;
+			registrations: readonly ToolRegistration[];
+		});
+
 export interface PromptedJsonToolLoopOptions {
 	profile: Pick<ModelProfile, "toolCalling" | "promptDialect">;
 	complete: PromptedJsonCompletion;
@@ -116,6 +146,7 @@ export interface PromptedJsonToolLoopOptions {
 	prompt: string;
 	systemPrompt?: string;
 	maxTurns?: number;
+	permission: PromptedJsonPermission;
 }
 
 export interface PromptedJsonToolLoopResult {
@@ -133,18 +164,27 @@ export interface PromptedJsonToolLoopResult {
 export async function runPromptedJsonToolLoop(options: PromptedJsonToolLoopOptions): Promise<PromptedJsonToolLoopResult> {
 	const coerce = createToolCallCoercion(options.profile);
 	const maxTurns = options.maxTurns ?? 8;
-	const toolsByName = new Map(options.tools.map((tool) => [tool.name, tool]));
+	const tools = buildPromptedJsonTools(options.tools, options.permission);
+	const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 	const systemPrompt = [
 		options.systemPrompt,
-		renderPromptedJsonToolInstructions(options.tools, options.profile.promptDialect),
+		renderPromptedJsonToolInstructions(tools, options.profile.promptDialect),
 	]
 		.filter((part): part is string => Boolean(part))
 		.join("\n\n");
 	const messages: Message[] = [userMessage(options.prompt)];
 	const dispatched: { toolCallId: string; toolName: string; arguments: Record<string, unknown>; resultText: string; isError: boolean }[] = [];
+	let repairedMalformedToolJson = false;
 
 	for (let turn = 1; turn <= maxTurns; turn++) {
 		const raw = await options.complete({ systemPrompt, messages });
+		const parseResult = parsePromptedJsonToolCallBlocks(assistantText(raw));
+		if (parseResult.malformedToolJson && !repairedMalformedToolJson && raw.stopReason !== "error") {
+			messages.push(raw);
+			messages.push(userMessage(renderMalformedToolJsonRepairPrompt()));
+			repairedMalformedToolJson = true;
+			continue;
+		}
 		const message = coerce(raw);
 		messages.push(message);
 		const toolCalls = message.content.filter((part): part is ToolCall => part.type === "toolCall");
@@ -164,6 +204,23 @@ export async function runPromptedJsonToolLoop(options: PromptedJsonToolLoopOptio
 		}
 	}
 	throw new Error(`prompted-json tool loop exceeded ${maxTurns} turns without a final answer`);
+}
+
+function renderMalformedToolJsonRepairPrompt(): string {
+	return [
+		"Your previous fenced JSON tool call was malformed.",
+		'Reply with exactly one fenced ```json block matching {"tool":"<tool name>","arguments":{...}} or answer without JSON.',
+	].join(" ");
+}
+
+function buildPromptedJsonTools(
+	tools: readonly AgentTool[],
+	permission: PromptedJsonPermission,
+): AgentTool[] {
+	if (permission.mode === "trusted-in-memory-tools") return [...tools];
+	const registry = new ToolRegistry();
+	for (const registration of permission.registrations) registry.register(registration);
+	return new PermissionGate(registry, permission.policy, permission).guardTools(tools);
 }
 
 async function executeToolCall(

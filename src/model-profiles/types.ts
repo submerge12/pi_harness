@@ -23,6 +23,12 @@ export interface ModelPromptDialect {
 export interface ModelFailureSignatures {
 	refusal?: readonly RegExp[];
 	loop?: readonly RegExp[];
+	/**
+	 * Opt-in: also run the linear repetition-loop detector for this model. Off by default —
+	 * legitimate repetitive output (table rows, log lines) would otherwise classify as a
+	 * fatal loop for every profile.
+	 */
+	detectRepetitionLoops?: boolean;
 	truncation?: readonly RegExp[];
 }
 

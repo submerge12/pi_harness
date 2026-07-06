@@ -98,6 +98,22 @@
 			},
 			"additionalProperties": false
 		},
+		"diffOrigin": {
+			"anyOf": [
+				{
+					"type": "string",
+					"const": "git"
+				},
+				{
+					"type": "string",
+					"const": "self-report"
+				},
+				{
+					"type": "string",
+					"const": "custom"
+				}
+			]
+		},
 		"decidedAt": {
 			"type": "number"
 		}

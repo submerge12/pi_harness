@@ -4,7 +4,16 @@ export {
 	validateTransitionLog,
 } from "./states.ts";
 export { runWorkerReviewerLoop } from "./coordinator.ts";
+export {
+	findHumanDecisionForRequest,
+	parseHumanDecisionsFile,
+} from "./human-gate-decisions.ts";
 export { createFileLoopPersistence } from "./persistence.ts";
+export type {
+	HumanDecisionParseWarning,
+	HumanDecisionWarningSink,
+	PersistedHumanDecision,
+} from "./human-gate-decisions.ts";
 export type {
 	RunState,
 	TransitionContext,

@@ -11,6 +11,11 @@ export const reviewVerdictValueSchema = Type.Union([
 ]);
 
 export const reviewPhaseSchema = Type.Union([Type.Literal("blind"), Type.Literal("cross-check")]);
+export const reviewDiffOriginSchema = Type.Union([
+	Type.Literal("git"),
+	Type.Literal("self-report"),
+	Type.Literal("custom"),
+]);
 
 export const reviewFindingSeveritySchema = Type.Union([
 	Type.Literal("info"),
@@ -42,6 +47,7 @@ export const reviewVerdictSchema = Type.Object(
 		phase: reviewPhaseSchema,
 		findings: Type.Array(reviewFindingSchema),
 		rerun: Type.Optional(reviewRerunSchema),
+		diffOrigin: Type.Optional(reviewDiffOriginSchema),
 		decidedAt: Type.Number(),
 	},
 	{ additionalProperties: false },
@@ -50,6 +56,7 @@ export const reviewVerdictSchema = Type.Object(
 export type ReviewVerdictValue = Static<typeof reviewVerdictValueSchema>;
 export type Verdict = ReviewVerdictValue;
 export type ReviewPhase = Static<typeof reviewPhaseSchema>;
+export type ReviewDiffOrigin = Static<typeof reviewDiffOriginSchema>;
 export type ReviewFindingSeverity = Static<typeof reviewFindingSeveritySchema>;
 export type ReviewFinding = Static<typeof reviewFindingSchema>;
 export type ReviewRerun = Static<typeof reviewRerunSchema>;

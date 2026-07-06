@@ -1,6 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { estimateTokens } from "@earendil-works/pi-agent-core";
 import { createTombstoneAnchor } from "./lifecycle.ts";
+import {
+	estimateMessageTokens as estimateSingleMessageTokens,
+	estimateMessagesTokens,
+} from "./token-estimator.ts";
 
 export const DEFAULT_PRUNE_MIN_TURNS_KEPT = 10;
 export const DEFAULT_PRUNE_MAX_RESULT_TOKENS = 6000;
@@ -164,8 +167,8 @@ function createToolResultCandidate(
 	const resultIndex = group.resultIndexes[0] ?? group.endIndex - 1;
 	const candidateReason = reason === "superseded-tool-result" ? "superseded_tool_result" : "oversized_unreferenced_tool_result";
 	const replacementText = createTombstoneText(candidateReason, turnIndexAt(messages, resultIndex));
-	const tokensBefore = estimateTokens(messages[resultIndex]);
-	const tokensAfter = estimateTokens(withTextContent(messages[resultIndex], replacementText));
+	const tokensBefore = estimateSingleMessageTokens(messages[resultIndex]);
+	const tokensAfter = estimateSingleMessageTokens(withTextContent(messages[resultIndex], replacementText));
 	const tokensRemoved = Math.max(0, tokensBefore - tokensAfter);
 
 	return {
@@ -192,7 +195,7 @@ function createDeadEndCandidates(messages: readonly AgentMessage[], protectedSta
 		if (!isExplicitDeadEndMarker(messages[index])) continue;
 		const startIndex = findPreviousUserIndex(messages, index - 1);
 		if (startIndex < 0 || isProtectedSpan(messages, startIndex, index, protectedStart)) continue;
-		const tokensBefore = estimateMessageTokens(messages.slice(startIndex, index));
+		const tokensBefore = estimateMessagesTokens(messages.slice(startIndex, index));
 		candidates.push({
 			id: `dead-end:${startIndex}:${index - 1}`,
 			action: "remove_messages",
@@ -255,7 +258,15 @@ function isExplicitDeadEndMarker(message: AgentMessage | undefined): boolean {
 	const record = asRecord(message);
 	if (record?.role !== "user") return false;
 	const text = messageText(message).toLowerCase();
-	return /\b(actually,\s*)?(forget|ignore|disregard|scrap|drop)\s+(that|this|previous)\b/.test(text) || /\bnever mind\b/.test(text);
+	if (/\b(?:do not|don'?t)\s+(?:forget|ignore|disregard|scrap|drop)\s+(?:that|this|previous)\b/.test(text)) {
+		return false;
+	}
+	const instructionBoundary = "(?:^|[.!?]\\s+)";
+	const deadEndInstruction = new RegExp(
+		`${instructionBoundary}(?:please\\s+)?(?:actually,\\s*)?(?:forget|ignore|disregard|scrap|drop)\\s+(?:that|this|previous)\\b`,
+	);
+	const neverMindInstruction = new RegExp(`${instructionBoundary}(?:never mind|nevermind)\\b`);
+	return deadEndInstruction.test(text.trimStart()) || neverMindInstruction.test(text.trimStart());
 }
 
 function findPreviousUserIndex(messages: readonly AgentMessage[], startIndex: number): number {
@@ -263,10 +274,6 @@ function findPreviousUserIndex(messages: readonly AgentMessage[], startIndex: nu
 		if (asRecord(messages[index])?.role === "user") return index;
 	}
 	return -1;
-}
-
-function estimateMessageTokens(messages: readonly AgentMessage[]): number {
-	return messages.reduce((total, message) => total + estimateTokens(message), 0);
 }
 
 function buildToolGroups(messages: readonly AgentMessage[]): ToolGroup[] {
@@ -300,7 +307,7 @@ function buildToolGroups(messages: readonly AgentMessage[]): ToolGroup[] {
 				endIndex,
 				toolCalls,
 				resultIndexes,
-				tokens: estimateMessageTokens(groupMessages),
+				tokens: estimateMessagesTokens(groupMessages),
 				isError,
 				text: resultMessages.map(messageText).join("\n"),
 				subjects: uniqueStrings(toolCalls.map((call) => call.subject).filter((subject): subject is string => Boolean(subject))),

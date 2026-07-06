@@ -13,6 +13,7 @@ import type {
 	WorkerReviewInput,
 	WorkerReviewerBudget,
 } from "../orchestration/index.ts";
+import type { ModelFailureClassification } from "../model-adapters/index.ts";
 import type { RunPolicy } from "../policy/index.ts";
 import type { ReviewVerdict } from "../review/index.ts";
 import type { RouteMatch, RoutingOptions } from "../routing/index.ts";
@@ -51,6 +52,8 @@ export interface RequestMemoryOptions {
 		scope: string;
 		subject: string;
 		now: number;
+		/** Receipt ids from the run; extractors may only grant tool_evidenced trust for facts linked to one. */
+		evidenceRefs?: readonly string[];
 	}) => readonly UserMemoryRecord[];
 }
 
@@ -73,7 +76,7 @@ export interface RequestWorkerReviewerLoopOptions {
 		attempt: number;
 		taskContract: TaskContract;
 		message: AssistantMessage;
-	}) => string | Promise<string>;
+	}) => AttemptDiff | string | undefined | Promise<AttemptDiff | string | undefined>;
 	maxAttempts?: number;
 	maxTurns?: number;
 	budget?: WorkerReviewerBudget;
@@ -83,6 +86,13 @@ export interface RequestWorkerReviewerLoopOptions {
 		requestDecision(request: HumanGateRequest): Promise<HumanDecision | undefined> | HumanDecision | undefined;
 		persistence?: LoopPersistence;
 	};
+}
+
+export type AttemptDiffOrigin = "git" | "self-report" | "custom";
+
+export interface AttemptDiff {
+	diff: string;
+	diffOrigin: AttemptDiffOrigin;
 }
 
 export interface AgentRequestDeps {
@@ -114,6 +124,7 @@ export type AgentRequestResult =
 			reviewVerdicts?: readonly ReviewVerdict[];
 			completionGateFailures?: readonly CompletionGateFailure[];
 			loopState?: "DONE" | "NEEDS_HUMAN" | "FAILED";
+			modelFailure?: ModelFailureClassification;
 			diffRef?: string;
 			route?: RouteMatch;
 			selectedSkill?: SkillCard;

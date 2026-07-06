@@ -198,6 +198,44 @@ describe("createPiRuntimeAdapter", () => {
 		expect(Value.Check(normalizedResultSchema, result)).toBe(true);
 	});
 
+	it("maps classified model failures into the normalized error envelope", async () => {
+		const assignment: WorkerAssignment = {
+			id: "assign-model-failure",
+			goal: "Write the result",
+			rawRequest: "write result",
+			assignedSkill: "coding",
+			writeScope: ["src"],
+			gateTier: "G1",
+			hardConstraints: [{ kind: "acceptance", value: "result exists", source: "test" }],
+		};
+		const adapter = createPiRuntimeAdapter({
+			getConfig: () => ({ activeToolNames: ["read", "write"], thinkingLevel: "off" }),
+			runRequest: async () => ({
+				entryStage: "execute",
+				message: assistantMessage("Model output classified as refusal by profile failure signatures.", {
+					stopReason: "error",
+					errorMessage: "Model output classified as refusal by profile failure signatures.",
+				}),
+				evidenceRefs: [],
+				modelFailure: { kind: "refusal", pattern: "\\bcannot\\b" },
+				stageTrace: [],
+				recalledMemories: [],
+				writtenMemories: [],
+			}),
+		});
+
+		const result = await adapter.run(assignment);
+
+		expect(result.status).toBe("failed");
+		expect(result.error).toEqual({
+			type: "model_failure",
+			kind: "refusal",
+			pattern: "\\bcannot\\b",
+			retryClassification: "fatal",
+		});
+		expect(Value.Check(normalizedResultSchema, result)).toBe(true);
+	});
+
 	it("maps human-gated loop outcomes to blocked normalized results", async () => {
 		const assignment: WorkerAssignment = {
 			id: "assign-human",
@@ -224,6 +262,52 @@ describe("createPiRuntimeAdapter", () => {
 		const result = await adapter.run(assignment);
 
 		expect(result.status).toBe("blocked");
+		expect(Value.Check(normalizedResultSchema, result)).toBe(true);
+	});
+
+	it("maps a completed repaired loop to completed despite historical failing verdicts", async () => {
+		const assignment: WorkerAssignment = {
+			id: "assign-repaired",
+			goal: "Repair the result",
+			rawRequest: "repair result",
+			assignedSkill: "coding",
+			writeScope: ["src"],
+			gateTier: "G1",
+			hardConstraints: [{ kind: "acceptance", value: "result exists", source: "test" }],
+		};
+		const adapter = createPiRuntimeAdapter({
+			getConfig: () => ({ activeToolNames: ["read", "write"], thinkingLevel: "off" }),
+			runRequest: async () => ({
+				entryStage: "execute",
+				message: assistantMessage("repair complete"),
+				evidenceRefs: ["receipt-final"],
+				loopState: "DONE",
+				reviewVerdicts: [
+					{
+						verdict: "FAIL",
+						reviewer: "blind-reviewer",
+						phase: "blind",
+						findings: [{ severity: "blocker", claim: "first attempt missed acceptance" }],
+						decidedAt: 1,
+					},
+					{
+						verdict: "NEEDS_HUMAN",
+						reviewer: "cross-checker",
+						phase: "cross-check",
+						findings: [{ severity: "warn", claim: "manual review requested" }],
+						decidedAt: 2,
+					},
+				],
+				stageTrace: [],
+				recalledMemories: [],
+				writtenMemories: [],
+			}),
+		});
+
+		const result = await adapter.run(assignment);
+
+		expect(result.status).toBe("completed");
+		expect(result.evidenceRefs).toEqual(["receipt-final"]);
 		expect(Value.Check(normalizedResultSchema, result)).toBe(true);
 	});
 });

@@ -322,6 +322,48 @@ describe("PermissionGate", () => {
 		});
 	});
 
+	it("wraps tool execute so deny decisions are authoritative at dispatch", async () => {
+		const registry = new ToolRegistry();
+		let executed = 0;
+		const registration = createToolRegistration("remove", "destructive");
+		registration.tool.execute = async () => {
+			executed += 1;
+			return { content: [{ type: "text", text: "removed" }], details: undefined };
+		};
+		registry.register(registration);
+		const gate = new PermissionGate(registry, createPolicy());
+		const guarded = gate.guardTool(registration.tool);
+
+		await expect(guarded.execute("remove-call", {})).rejects.toThrow("Tool remove is denied by policy");
+		expect(executed).toBe(0);
+	});
+
+	it("serializes ask callbacks for guarded parallel dispatch", async () => {
+		const registry = new ToolRegistry();
+		const registration = createToolRegistration("fetch", "network");
+		registration.tool.execute = async () => ({ content: [{ type: "text", text: "ok" }], details: undefined });
+		registry.register(registration);
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const gate = new PermissionGate(registry, createPolicy(), {
+			askCallback: async () => {
+				inFlight += 1;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				await Promise.resolve();
+				inFlight -= 1;
+				return true;
+			},
+		});
+		const guarded = gate.guardTool(registration.tool);
+
+		await Promise.all([
+			guarded.execute("fetch-1", { url: "https://example.invalid/a" }),
+			guarded.execute("fetch-2", { url: "https://example.invalid/b" }),
+		]);
+
+		expect(maxInFlight).toBe(1);
+	});
+
 	it("installs on a harness-like object", async () => {
 		const registry = new ToolRegistry();
 		registry.register(createToolRegistration("read", "read-only"));

@@ -37,6 +37,11 @@ export interface RunPolicy {
 		maxAttempts?: number;
 		maxRewinds?: number;
 	};
+	lessons?: {
+		enabled?: boolean;
+		ttlMs?: number;
+		maxLessons?: number;
+	};
 	gateTiers?: Partial<Record<"G0" | "G1" | "G2" | "G3" | "G4", "auto" | "review" | "human">>;
 }
 

@@ -9,6 +9,7 @@ import { loadConfigLayerOverrides } from "../src/config-file.ts";
 import { createAgent } from "../src/agents/create-agent.ts";
 import { mergeAgentProfileConfig } from "../src/agents/merge.ts";
 import { GenericHarness } from "../src/harness.ts";
+import { createPiRuntimeAdapter } from "../src/runtime/index.ts";
 import type { EvidenceGateway } from "../src/evidence/index.ts";
 import {
 	clearProfilesForTests,
@@ -261,6 +262,35 @@ describe("createAgent", () => {
 		await harness.dispose();
 
 		expect(toolNames).toEqual(["static_tool", "factory_tool"]);
+	});
+
+	it("keeps profile registrations and config tools visible across runtime metadata", async () => {
+		const profileTool = createToolRegistration("fetch");
+		const configTool = createToolRegistration("bash").tool;
+		const profile = createProfile({
+			tools: [profileTool],
+		});
+
+		const harness = await createAgent(profile, {
+			cwd: await mkdtemp(join(tmpdir(), "pi-harness-agent-mixed-tools-")),
+			apiKey: "test-key",
+			useDefaultTools: false,
+			tools: [configTool],
+		});
+
+		try {
+			const config = harness.getConfig();
+			const lifecycleToolNames = harness.getRequestLifecycleDeps().prefix?.declaredTools.map((tool) => tool.name);
+			const capabilities = createPiRuntimeAdapter(harness).capabilities();
+
+			expect(config.toolRegistrations?.map((registration) => registration.tool.name)).toEqual(["fetch"]);
+			expect(config.tools?.map((tool) => tool.name)).toEqual(["bash"]);
+			expect(lifecycleToolNames).toEqual(["fetch", "bash"]);
+			expect(capabilities.canNetwork).toBe(true);
+			expect(capabilities.canRunCommands).toBe(true);
+		} finally {
+			await harness.dispose();
+		}
 	});
 
 	it("passes runtime evidence and lease wiring into profile tool factories", async () => {

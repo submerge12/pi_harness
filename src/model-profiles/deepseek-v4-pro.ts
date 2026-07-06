@@ -31,7 +31,9 @@ export const deepSeekV4ProProfile: ModelProfile = {
 			/(?:无法|不能)(?:协助|提供|完成|帮助)/,
 			/抱歉[，,]?\s*我(?:无法|不能)/,
 		],
-		loop: [/(.{24,}?)(?:\s*\1){4,}/s],
+		loop: [],
+		// DeepSeek's observed failure mode is verbatim repetition; the linear detector covers it.
+		detectRepetitionLoops: true,
 		// An opening fence whose JSON body never closes — the output was cut mid-block.
 		truncation: [/```(?:json)?\s*\{(?:(?!```)[\s\S])*$/],
 	},

@@ -63,7 +63,7 @@ describe("prompted-json parsing and coercion", () => {
 		]);
 	});
 
-	it("accepts the nested tool_call shape and ignores non-tool JSON blocks", () => {
+	it("requires the declared tool envelope and ignores non-tool JSON blocks", () => {
 		const text = [
 			"```json",
 			'{"result": "just data, not a call"}',
@@ -72,9 +72,7 @@ describe("prompted-json parsing and coercion", () => {
 			'{"tool_call": {"name": "get_weather", "arguments": {"city": "Beijing"}}}',
 			"```",
 		].join("\n");
-		expect(parsePromptedJsonToolCalls(text)).toEqual([
-			{ name: "get_weather", arguments: { city: "Beijing" } },
-		]);
+		expect(parsePromptedJsonToolCalls(text)).toEqual([]);
 	});
 
 	it("rewrites a prose+JSON assistant message into native ToolCall parts", () => {
@@ -127,6 +125,7 @@ describe("prompted-json tool dispatch round-trip", () => {
 			complete,
 			tools: [weatherTool],
 			prompt: "What is the weather in Hangzhou?",
+			permission: { mode: "trusted-in-memory-tools" },
 		});
 
 		expect(result.turns).toBe(2);
@@ -163,9 +162,96 @@ describe("prompted-json tool dispatch round-trip", () => {
 			complete,
 			tools: [weatherTool],
 			prompt: "Use the mystery tool.",
+			permission: { mode: "trusted-in-memory-tools" },
 		});
 		expect(result.toolCalls[0]).toMatchObject({ toolName: "does_not_exist", isError: true });
 		expect(result.turns).toBe(2);
+	});
+
+	it("repair-prompts once for malformed fenced tool JSON before dispatching", async () => {
+		let calls = 0;
+		let repairPrompt = "";
+		const complete = async ({ messages }: { systemPrompt: string; messages: Message[] }) => {
+			calls += 1;
+			const lastUser = [...messages].reverse().find((message) => message.role === "user");
+			const lastUserText = Array.isArray(lastUser?.content)
+				? lastUser.content.map((part) => (part.type === "text" ? part.text : "")).join("")
+				: "";
+			if (calls === 1) {
+				return assistantMessage('```json\n{"tool": "get_weather", "arguments": {"city": "Hangzhou"\n```');
+			}
+			if (calls === 2) {
+				repairPrompt = lastUserText;
+				return assistantMessage('```json\n{"tool": "get_weather", "arguments": {"city": "Hangzhou"}}\n```');
+			}
+			return assistantMessage(`Used the tool after repair: ${lastUserText.split("\n")[1]}`);
+		};
+
+		const result = await runPromptedJsonToolLoop({
+			profile: promptedJsonProfile,
+			complete,
+			tools: [weatherTool],
+			prompt: "What is the weather in Hangzhou?",
+			permission: { mode: "trusted-in-memory-tools" },
+		});
+
+		expect(calls).toBe(3);
+		expect(result.turns).toBe(3);
+		expect(repairPrompt).toContain("malformed");
+		expect(repairPrompt).toContain("fenced ```json block");
+		expect(result.toolCalls[0]).toMatchObject({
+			toolName: "get_weather",
+			arguments: { city: "Hangzhou" },
+			isError: false,
+		});
+	});
+
+	it("honors permission denials without executing prompted-json tools", async () => {
+		let completeCalls = 0;
+		let executed = 0;
+		let secondTurnText = "";
+		const deniedTool: AgentTool = {
+			...weatherTool,
+			execute: async (...args) => {
+				executed += 1;
+				return await weatherTool.execute(...args);
+			},
+		};
+		const complete = async ({ messages }: { systemPrompt: string; messages: Message[] }) => {
+			completeCalls += 1;
+			if (completeCalls === 1) {
+				return assistantMessage('```json\n{"tool": "get_weather", "arguments": {"city": "Hangzhou"}}\n```');
+			}
+			const lastUser = [...messages].reverse().find((message) => message.role === "user");
+			secondTurnText = Array.isArray(lastUser?.content)
+				? lastUser.content.map((part) => (part.type === "text" ? part.text : "")).join("")
+				: "";
+			return assistantMessage("I could not use the weather tool.");
+		};
+
+		const result = await runPromptedJsonToolLoop({
+			profile: promptedJsonProfile,
+			complete,
+			tools: [deniedTool],
+			prompt: "What is the weather in Hangzhou?",
+			permission: {
+				mode: "permission-gate",
+				askCallback: async () => false,
+				policy: {
+					defaults: { "read-only": "ask", network: "ask", write: "deny", destructive: "deny" },
+				},
+				registrations: [{ tool: deniedTool, accessLevel: "network" }],
+			},
+		});
+
+		expect(executed).toBe(0);
+		expect(result.toolCalls[0]).toMatchObject({
+			toolName: "get_weather",
+			isError: true,
+			resultText: "Tool get_weather requires approval",
+		});
+		expect(secondTurnText).toContain("Tool result for get_weather");
+		expect(secondTurnText).toContain("Tool get_weather requires approval");
 	});
 
 	it("throws when the model never stops calling tools", async () => {
@@ -178,6 +264,7 @@ describe("prompted-json tool dispatch round-trip", () => {
 				tools: [weatherTool],
 				prompt: "Loop forever.",
 				maxTurns: 3,
+				permission: { mode: "trusted-in-memory-tools" },
 			}),
 		).rejects.toThrow(/exceeded 3 turns/);
 	});

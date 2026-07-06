@@ -22,3 +22,5 @@ export type { HarnessProcessGuardOptions, WorktreeProviderOptions } from "./work
 export { createHarnessProcessGuard, createWorktreeProvider } from "./worktree-provider.ts";
 export type { NullWorktreeProviderOptions } from "./null-worktree-provider.ts";
 export { createNullWorktreeProvider } from "./null-worktree-provider.ts";
+export type { GitDiffSourceOptions } from "./git-diff-source.ts";
+export { createGitDiffSource, readGitAttemptDiff } from "./git-diff-source.ts";

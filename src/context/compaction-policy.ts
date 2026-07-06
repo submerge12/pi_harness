@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { estimateContextTokens } from "@earendil-works/pi-agent-core";
 import { computeTokenBudget, type TokenBudgetRatios } from "./token-budget.ts";
+import { estimateContextTokens } from "./token-estimator.ts";
 
 export interface CompactionPolicyConfig {
 	enabled?: boolean;

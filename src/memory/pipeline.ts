@@ -49,6 +49,7 @@ export function recallUserMemories(
 	query: UserMemoryRecallQuery = {},
 ): UserMemoryRecord[] {
 	const now = query.now ?? Date.now();
+	store.deleteExpired(now);
 	const winners = new Map<string, UserMemoryRecord>();
 
 	for (const record of store.records()) {

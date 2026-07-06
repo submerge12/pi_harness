@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { createJsonlSession } from "../session/factory.ts";
 import type { HarnessConfig, ResolvedHarnessConfig } from "../config.ts";
@@ -20,15 +21,17 @@ import {
 	type EvidenceManifestEntry,
 	type EvidenceReceiptCollector,
 } from "../evidence/index.ts";
+import { createGitDiffSource } from "../execution/index.ts";
 import { createReceiptLedger } from "../feedback/index.ts";
 import { GenericHarness, createGenericHarnessFromSession, type GenericHarnessRuntimeOptions } from "../harness.ts";
 import type { RequestLifecycleRuntimeOptions } from "../lifecycle/index.ts";
 import { BudgetTracker } from "../observability/budget.ts";
 import { CostTracker } from "../observability/cost-tracker.ts";
+import { findHumanDecisionForRequest } from "../orchestration/human-gate-decisions.ts";
 import { createFileLoopPersistence } from "../orchestration/index.ts";
 import { createSpawnedReviewerAgent } from "../review/index.ts";
 import { createFileTraceSink } from "../trace/index.ts";
-import { PermissionGate, ToolPermissionDecisionStore } from "../tools/permission.ts";
+import { ToolPermissionDecisionStore } from "../tools/permission.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { StoredToolRegistration, ToolAccessLevel, ToolPermissionDecisionLookup, ToolRegistration } from "../tools/types.ts";
 import { mergeAgentProfileConfig, mergeStricterPolicies, type ToolAccessMap } from "./merge.ts";
@@ -151,16 +154,14 @@ export async function createAgent(profile: AgentProfile, options: CreateAgentOpt
 		...(budgetTracker ? { budgetTracker } : {}),
 		costTracker,
 		...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
+		permissionDecisions,
 	};
 	const registry = await createRegistry(profile, env, resolvedConfig, {
 		...runtimeOptions,
 		getPermissionDecision: permissionDecisions.lookup,
 	});
 	const registrations = registry?.listRegistrations();
-	const profileTools = registry?.toAgentTools() ?? [];
-	const tools = profileTools.length > 0 || resolvedConfig.tools
-		? [...profileTools, ...(resolvedConfig.tools ?? [])]
-		: undefined;
+	const tools = resolvedConfig.tools;
 	const policy = resolvedConfig.internal?.inheritedPolicy
 		? mergeStricterPolicies(resolvedConfig.internal.inheritedPolicy, profile.policy, toolAccessMap(registrations))
 		: resolvedConfig.policy;
@@ -170,19 +171,9 @@ export async function createAgent(profile: AgentProfile, options: CreateAgentOpt
 		resources: mergeResources(profile, resolvedConfig),
 		tools,
 		toolRegistrations: registrations,
-		useDefaultTools: tools === undefined ? resolvedConfig.useDefaultTools : false,
+		useDefaultTools: registrations || tools ? false : resolvedConfig.useDefaultTools,
 	};
 	const harness = await createGenericHarnessFromSession(config, env, session, runtimeOptions);
-	if (registry) {
-		harness.addDisposer(
-			new PermissionGate(registry, harness.getConfig().policy, {
-				askCallback: harness.getConfig().askPermission,
-				getActiveLease,
-				getActiveToolNames: () => harness.getActiveTaskToolNames(),
-				onDecision: (decision) => permissionDecisions.record(decision),
-			}).install(harness),
-		);
-	}
 	const disposer = await profile.install?.(harness);
 	if (disposer) harness.addDisposer(disposer);
 	return harness;
@@ -228,6 +219,7 @@ async function buildRequestLifecycleRuntime(
 	const reviewerAgent = createSpawnedReviewerAgent({
 		profile: input.config.reviewLoop.reviewerProfile ?? input.profile.name,
 		maxTurns: input.config.reviewLoop.reviewerMaxTurns ?? 3,
+		fileExists: (path) => existsSync(isAbsolute(path) ? path : resolve(input.config.cwd, path)),
 		spawnAgent: async (spawnInput) => {
 			const child = await createAgent(resolveReviewerProfile(spawnInput.profile, input.profile), {
 				...input.config,
@@ -257,6 +249,7 @@ async function buildRequestLifecycleRuntime(
 			checkpoint,
 			ledger: createReceiptLedger(),
 			receiptCollector,
+			diffSource: createGitDiffSource({ env: input.env, cwd: input.config.cwd }),
 			...(input.evidenceGateway
 				? {
 						captureTaskAttemptEvidence: async ({ attempt, taskContract, message }) =>
@@ -278,10 +271,7 @@ async function buildRequestLifecycleRuntime(
 				persistence,
 				requestDecision: async (request) => {
 					const decisions = await persistence.loadHumanDecisions();
-					return decisions.find((decision) =>
-						(decision.requestId === request.id || decision.requestId === undefined) &&
-						(decision.action === "resume" || decision.action === "abort")
-					);
+					return findHumanDecisionForRequest(decisions, request.id);
 				},
 			},
 			reviewer: async ({ input: reviewerInput }) => await reviewerAgent.review(reviewerInput),

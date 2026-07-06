@@ -145,6 +145,19 @@ describe("cache-pruning relevance detection", () => {
 		});
 	});
 
+	it("does not treat reminders like don't forget that as dead-end branch markers", () => {
+		const messages = [
+			userMessage("write the repair plan"),
+			assistantMessage("draft plan with tests"),
+			userMessage("don't forget that the plan needs verification"),
+			userMessage("continue with implementation"),
+		];
+
+		const candidates = detectPruningCandidates(messages, { minTurnsKept: 0 });
+
+		expect(candidates).toEqual([]);
+	});
+
 	it("does not mark user-pinned content", () => {
 		const messages = [
 			userMessage("read the config"),

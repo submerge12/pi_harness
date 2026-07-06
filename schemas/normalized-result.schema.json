@@ -75,6 +75,53 @@
 		"message": {
 			"type": "string"
 		},
+		"error": {
+			"type": "object",
+			"required": [
+				"type",
+				"kind",
+				"pattern",
+				"retryClassification"
+			],
+			"properties": {
+				"type": {
+					"type": "string",
+					"const": "model_failure"
+				},
+				"kind": {
+					"anyOf": [
+						{
+							"type": "string",
+							"const": "refusal"
+						},
+						{
+							"type": "string",
+							"const": "loop"
+						},
+						{
+							"type": "string",
+							"const": "truncation"
+						}
+					]
+				},
+				"pattern": {
+					"type": "string"
+				},
+				"retryClassification": {
+					"anyOf": [
+						{
+							"type": "string",
+							"const": "fatal"
+						},
+						{
+							"type": "string",
+							"const": "transient"
+						}
+					]
+				}
+			},
+			"additionalProperties": false
+		},
 		"model": {
 			"type": "string"
 		}

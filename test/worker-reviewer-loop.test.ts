@@ -127,6 +127,145 @@ describe("worker reviewer loop", () => {
 		expect(trace.events().filter((event) => event.type === "review-verdict")).toHaveLength(1);
 	});
 
+	it("rewinds bash-like mutations that do not report actual write paths", async () => {
+		const trace = createInMemoryTraceSink({ runId: "run-baseline-mutation", now: () => 1 });
+		const checkpoint = createInMemoryCheckpointStore({
+			rootDir: "/repo",
+			files: new Map([["tmp/worker-loop/loop-result.txt", "before"]]),
+		});
+		const reviewVerdicts = [verdict("FAIL"), verdict("PASS")];
+		const seenAtAttemptStart: string[] = [];
+
+		const result = await runWorkerReviewerLoop({
+			taskContract: writeTask,
+			trace,
+			checkpoint,
+			ledger: createReceiptLedger(),
+			maxAttempts: 2,
+			budget: { checkBeforeTurn: () => ({ allowed: true, status: "ok", spentUsd: 0 }) },
+			worker: async ({ attempt }) => {
+				seenAtAttemptStart.push(checkpoint.readFile("tmp/worker-loop/loop-result.txt") ?? "<missing>");
+				if (attempt === 1) checkpoint.writeFile("tmp/worker-loop/loop-result.txt", "dirty from bash");
+				return {
+					doneClaim: true,
+					diff: `attempt ${attempt}`,
+					receipts: [manifestEntry({
+						id: `receipt-${attempt}`,
+						actualWritePaths: [],
+						stdoutRef: `.evidence-local/run/${attempt}.stdout`,
+					})],
+				};
+			},
+			reviewer: async () => reviewVerdicts.shift() ?? verdict("PASS"),
+		});
+
+		expect(result.state).toBe("DONE");
+		expect(seenAtAttemptStart).toEqual(["before", "before"]);
+	});
+
+	it("removes files created by a failed attempt even when receipts report no write paths", async () => {
+		const trace = createInMemoryTraceSink({ runId: "run-baseline-created", now: () => 1 });
+		const checkpoint = createInMemoryCheckpointStore({
+			rootDir: "/repo",
+			files: new Map([["tmp/worker-loop/loop-result.txt", "before"]]),
+		});
+		const reviewVerdicts = [verdict("FAIL"), verdict("PASS")];
+		const createdFileAtAttemptStart: Array<string | undefined> = [];
+
+		const result = await runWorkerReviewerLoop({
+			taskContract: writeTask,
+			trace,
+			checkpoint,
+			ledger: createReceiptLedger(),
+			maxAttempts: 2,
+			budget: { checkBeforeTurn: () => ({ allowed: true, status: "ok", spentUsd: 0 }) },
+			worker: async ({ attempt }) => {
+				createdFileAtAttemptStart.push(checkpoint.readFile("tmp/worker-loop/new.txt"));
+				if (attempt === 1) checkpoint.writeFile("tmp/worker-loop/new.txt", "created by bash");
+				return {
+					doneClaim: true,
+					diff: `attempt ${attempt}`,
+					receipts: [manifestEntry({
+						id: `receipt-${attempt}`,
+						actualWritePaths: [],
+						stdoutRef: `.evidence-local/run/${attempt}.stdout`,
+					})],
+				};
+			},
+			reviewer: async () => reviewVerdicts.shift() ?? verdict("PASS"),
+		});
+
+		expect(result.state).toBe("DONE");
+		expect(createdFileAtAttemptStart).toEqual([undefined, undefined]);
+		expect(checkpoint.readFile("tmp/worker-loop/new.txt")).toBeUndefined();
+	});
+
+	it("restores the pre-attempt baseline when a model failure terminates the loop", async () => {
+		const trace = createInMemoryTraceSink({ runId: "run-model-failure-rewind", now: () => 1 });
+		const checkpoint = createInMemoryCheckpointStore({
+			rootDir: "/repo",
+			files: new Map([["tmp/worker-loop/loop-result.txt", "before"]]),
+		});
+
+		const result = await runWorkerReviewerLoop({
+			taskContract: writeTask,
+			trace,
+			checkpoint,
+			ledger: createReceiptLedger(),
+			maxAttempts: 3,
+			budget: { checkBeforeTurn: () => ({ allowed: true, status: "ok", spentUsd: 0 }) },
+			worker: async () => {
+				checkpoint.writeFile("tmp/worker-loop/loop-result.txt", "dirty before model failure");
+				checkpoint.writeFile("tmp/worker-loop/new.txt", "created before model failure");
+				return {
+					doneClaim: false,
+					diff: "model refused mid-attempt",
+					diffOrigin: "self-report" as const,
+					receipts: [manifestEntry({ actualWritePaths: [] })],
+					modelFailure: { kind: "refusal" as const, pattern: "cannot help" },
+				};
+			},
+			reviewer: async () => verdict("PASS"),
+		});
+
+		expect(result.state).toBe("FAILED");
+		expect(result.modelFailure).toEqual({ kind: "refusal", pattern: "cannot help" });
+		expect(checkpoint.readFile("tmp/worker-loop/loop-result.txt")).toBe("before");
+		expect(checkpoint.readFile("tmp/worker-loop/new.txt")).toBeUndefined();
+		expect(trace.events().some((event) => event.type === "rewind")).toBe(true);
+	});
+
+	it("passes diff origin to reviewers and stamps it onto verdicts and trace", async () => {
+		const trace = createInMemoryTraceSink({ runId: "run-diff-origin", now: () => 1 });
+
+		const result = await runWorkerReviewerLoop({
+			taskContract: writeTask,
+			trace,
+			checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+			ledger: createReceiptLedger(),
+			maxAttempts: 1,
+			budget: { checkBeforeTurn: () => ({ allowed: true, status: "ok", spentUsd: 0 }) },
+			worker: async () => ({
+				doneClaim: true,
+				diff: "diff --git a/tmp/worker-loop/loop-result.txt b/tmp/worker-loop/loop-result.txt",
+				diffOrigin: "git",
+				receipts: [manifestEntry()],
+			}),
+			reviewer: async ({ input }) => {
+				expect(input.diffOrigin).toBe("git");
+				return verdict("PASS");
+			},
+		});
+
+		const reviewEvent = trace.events().find((event) => event.type === "review-verdict");
+		const workerEvent = trace.events().find((event) => event.type === "worker-attempt");
+
+		expect(result.state).toBe("DONE");
+		expect(result.reviewVerdicts[0]?.diffOrigin).toBe("git");
+		expect(workerEvent?.data).toMatchObject({ diffOrigin: "git" });
+		expect(reviewEvent?.data).toMatchObject({ verdict: expect.objectContaining({ diffOrigin: "git" }) });
+	});
+
 	it("rejects a worker done claim when evidence lacks a successful receipt", async () => {
 		const trace = createInMemoryTraceSink({ runId: "run-false-pass", now: () => 1 });
 		let reviewerCalls = 0;
@@ -153,6 +292,35 @@ describe("worker reviewer loop", () => {
 		expect(result.completionGateFailures).toHaveLength(1);
 		expect(reviewerCalls).toBe(0);
 		expect(trace.events().some((event) => event.type === "review-verdict")).toBe(false);
+	});
+
+	it("does not treat conversational give-up as a done claim", async () => {
+		const trace = createInMemoryTraceSink({ runId: "run-give-up", now: () => 1 });
+		let reviewerCalls = 0;
+
+		const result = await runWorkerReviewerLoop({
+			taskContract: writeTask,
+			trace,
+			checkpoint: createInMemoryCheckpointStore({ rootDir: "/repo" }),
+			ledger: createReceiptLedger(),
+			maxAttempts: 1,
+			budget: { checkBeforeTurn: () => ({ allowed: true, status: "ok", spentUsd: 0 }) },
+			worker: async () => ({
+				doneClaim: false,
+				diff: "I couldn't finish this.",
+				receipts: [manifestEntry()],
+			}),
+			reviewer: async () => {
+				reviewerCalls += 1;
+				return verdict("PASS");
+			},
+		});
+
+		expect(result.state).toBe("NEEDS_HUMAN");
+		expect(result.completionGateFailures).toEqual([
+			{ attempt: 1, reason: "worker did not claim completion" },
+		]);
+		expect(reviewerCalls).toBe(0);
 	});
 
 	it("bypasses the reviewer loop for read-only tasks", async () => {

@@ -17,6 +17,8 @@ export interface ReviewCrossCheckInput {
 	manifest: unknown;
 	policy: unknown;
 	blindVerdict: ReviewVerdict;
+	/** Filesystem capability for `file-exists` criteria; absent → such criteria are unverifiable. */
+	fileExists?: (path: string) => boolean;
 }
 
 export interface BlindReviewer {

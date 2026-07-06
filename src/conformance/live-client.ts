@@ -25,6 +25,7 @@ export function createLiveConformanceClient(options: LiveConformanceClientOption
 			prompt,
 			systemPrompt: profile.promptDialect.systemPreamble,
 			maxTurns: options.maxTurns ?? 8,
+			permission: { mode: "trusted-in-memory-tools" },
 			complete: async ({ systemPrompt, messages }) =>
 				await completeSimple(
 					model,

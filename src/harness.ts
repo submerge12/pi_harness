@@ -21,6 +21,7 @@ import { completeSimple, getEnvApiKey } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, KnownProvider, Message, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
 import { isAbsolute, resolve } from "node:path";
 import { CacheStrategyEngine } from "./cache/strategy-engine.ts";
+import type { CacheStrategyDecision } from "./cache/types.ts";
 import type { HarnessConfig, ResolvedHarnessConfig } from "./config.ts";
 import { resolveHarnessConfig } from "./config.ts";
 import { CompactionPolicy } from "./context/compaction-policy.ts";
@@ -38,16 +39,30 @@ import {
 	type AgentRequestResult,
 	type RequestLifecycleRuntimeOptions,
 } from "./lifecycle/index.ts";
+import {
+	ModelFailureError,
+	classifyModelFailure,
+	classifyModelFailureError,
+} from "./model-adapters/failure-classifier.ts";
+import type { ModelProfile } from "./model-profiles/types.ts";
+import {
+	findModelProfile,
+	findModelProfileForModel,
+} from "./model-profiles/registry.ts";
 import { resolveHarnessModel, resolveModel } from "./model-resolver.ts";
 import { BudgetTracker } from "./observability/budget.ts";
 import { CacheReportTracker } from "./observability/cache-report.ts";
 import { CostTracker } from "./observability/cost-tracker.ts";
 import { EventLog, createSessionEventLogPath } from "./observability/event-log.ts";
 import type { CostSummary, HarnessEvent as ObservabilityEvent } from "./observability/types.ts";
+import { registerKnownSecret } from "./redaction/core.ts";
+import { classifyProviderError } from "./resilience/errors.ts";
 import { withRetry } from "./resilience/retry.ts";
 import { createJsonlSession } from "./session/factory.ts";
 import { createDefaultToolset } from "./tools/builtin/index.ts";
 import { PermissionGate, ToolPermissionDecisionStore } from "./tools/permission.ts";
+import { ToolRegistry } from "./tools/registry.ts";
+import type { StoredToolRegistration, ToolAccessLevel, ToolRegistration } from "./tools/types.ts";
 
 export interface ApiKeyResolutionConfig {
 	apiKey?: string;
@@ -97,10 +112,16 @@ export async function resolveApiKeyAndHeaders(
 	config: ApiKeyResolutionConfig,
 ): Promise<{ apiKey: string; headers?: Record<string, string> }> {
 	const headers = config.apiHeaders ? { ...config.apiHeaders } : undefined;
-	if (config.apiKey) return headers ? { apiKey: config.apiKey, headers } : { apiKey: config.apiKey };
+	if (config.apiKey) {
+		registerKnownSecret(config.apiKey);
+		return headers ? { apiKey: config.apiKey, headers } : { apiKey: config.apiKey };
+	}
 
 	const apiKey = getEnvApiKey(config.provider);
-	if (apiKey) return headers ? { apiKey, headers } : { apiKey };
+	if (apiKey) {
+		registerKnownSecret(apiKey);
+		return headers ? { apiKey, headers } : { apiKey };
+	}
 
 	throw new AuthenticationError(config.provider);
 }
@@ -164,6 +185,7 @@ export interface GenericHarnessOptions {
 	checkpoint?: CheckpointStore;
 	budgetTracker?: BudgetTracker;
 	costTracker?: CostTracker;
+	permissionDecisions?: ToolPermissionDecisionStore;
 }
 
 export interface GenericHarnessRuntimeOptions {
@@ -173,6 +195,7 @@ export interface GenericHarnessRuntimeOptions {
 	checkpoint?: CheckpointStore;
 	budgetTracker?: BudgetTracker;
 	costTracker?: CostTracker;
+	permissionDecisions?: ToolPermissionDecisionStore;
 }
 
 export class GenericHarness {
@@ -180,6 +203,7 @@ export class GenericHarness {
 	private readonly budgetTracker?: BudgetTracker;
 	private readonly cacheReportTracker = new CacheReportTracker();
 	private readonly costTracker: CostTracker;
+	private pendingCacheDecision?: CacheStrategyDecision;
 	private readonly env?: ExecutionEnv;
 	private readonly session?: Session;
 	private readonly inner: GenericHarnessInner;
@@ -194,11 +218,15 @@ export class GenericHarness {
 
 	constructor(options: GenericHarnessOptions = {}) {
 		this.config = resolveHarnessConfig(options.config);
+		registerKnownSecret(this.config.apiKey);
+		registerKnownSecret(getEnvApiKey(this.config.provider));
 		this.env = options.env;
 		this.session = options.session;
 		this.budgetTracker = options.budgetTracker ?? (this.config.budget ? new BudgetTracker(this.config.budget) : undefined);
 		this.costTracker = options.costTracker ?? new CostTracker();
 		this.requestLifecycle = createRequestLifecycleDeps(this.config, options.requestLifecycle);
+		const startupModel = tryResolveHarnessModel(this.config);
+		if (startupModel) warnIfModelProfileCostDrift(startupModel);
 		this.inner = options.inner ?? this.createInner(options);
 		if (options.inner) this.configurePruneExecutor(options.session);
 		if (!options.inner) this.installInternalSubscriptions();
@@ -209,12 +237,12 @@ export class GenericHarness {
 		if (!options.session) throw new Error("GenericHarness requires session when inner is not provided");
 
 		const model = resolveHarnessModel(this.config);
-		const permissionDecisions = new ToolPermissionDecisionStore();
+		const permissionDecisions = options.permissionDecisions ?? new ToolPermissionDecisionStore();
 		const evidenceGateway = recordEvidenceGatewayEntries(
 			options.evidenceGateway,
 			options.requestLifecycle?.workerReviewerLoop?.receiptCollector,
 		);
-		const registry = this.config.useDefaultTools
+		const defaultRegistry = this.config.useDefaultTools
 			? createDefaultToolset({
 					env: options.env,
 					roots: this.config.sandbox?.roots,
@@ -227,7 +255,16 @@ export class GenericHarness {
 					commandRules: this.config.commandRules,
 				})
 			: undefined;
-		const tools = this.config.tools ?? registry?.toAgentTools();
+		const registry = createRuntimeToolRegistry(defaultRegistry, this.config.toolRegistrations, this.config.tools);
+		const gate = registry
+			? new PermissionGate(registry, this.config.policy, {
+					askCallback: this.config.askPermission,
+					getActiveLease: options.getActiveLease,
+					getActiveToolNames: () => this.activeTaskToolNames,
+					onDecision: (decision) => permissionDecisions.record(decision),
+				})
+			: undefined;
+		const tools = gate && registry ? gate.guardTools(registry.toAgentTools()) : undefined;
 		const activeTools = selectActiveTools(tools, this.config.activeToolNames);
 		this.configurePruneExecutor(options.session, async () => {
 			await this.prewarmPrunedContext(model, activeTools);
@@ -250,18 +287,8 @@ export class GenericHarness {
 			tools,
 		});
 
-		if (registry) {
-			this.unsubscribes.push(
-				new PermissionGate(registry, this.config.policy, {
-					askCallback: this.config.askPermission,
-					getActiveLease: options.getActiveLease,
-					getActiveToolNames: () => this.activeTaskToolNames,
-					onDecision: (decision) => permissionDecisions.record(decision),
-				}).install(inner),
-			);
-		}
 		this.unsubscribes.push(new ContextManager({
-			contextWindow: this.config.contextWindow ?? model.contextWindow,
+			contextWindow: this.effectiveContextWindow(model),
 			ratios: this.config.tokenBudgetRatios,
 			rewriteMessages: this.pruneExecutor
 				? (messages) => this.pruneExecutor?.rewriteContext(messages) ?? messages
@@ -269,7 +296,9 @@ export class GenericHarness {
 		}).bind(inner));
 		this.unsubscribes.push(new CacheStrategyEngine({
 			...this.config.cache,
-			onDecision: (decision) => this.cacheReportTracker.recordDecision(decision),
+			onDecision: (decision) => {
+				this.pendingCacheDecision = decision;
+			},
 		}).bind(inner));
 		return inner;
 	}
@@ -284,10 +313,10 @@ export class GenericHarness {
 	}
 
 	private async executePrompt(text: string, options?: AgentHarnessPromptOptions): Promise<AssistantMessage> {
-		const budgetDecision = this.budgetTracker?.checkBeforeTurn();
-		if (budgetDecision && !budgetDecision.allowed) throw new Error(budgetDecision.message ?? "budget exceeded");
-
 		const result = await withRetry(async () => {
+			const budgetDecision = this.budgetTracker?.checkBeforeTurn();
+			if (budgetDecision && !budgetDecision.allowed) throw new Error(budgetDecision.message ?? "budget exceeded");
+
 			const leafId = await this.session?.getLeafId();
 			try {
 				const message = await this.inner.prompt(text, options);
@@ -296,6 +325,11 @@ export class GenericHarness {
 					await this.restoreSessionLeaf(leafId);
 					throw failure;
 				}
+				const modelFailure = this.classifyAssistantModelFailure(message);
+				if (modelFailure) {
+					await this.restoreSessionLeaf(leafId);
+					throw new ModelFailureError(modelFailure, assistantText(message), message);
+				}
 				return message;
 			} catch (error) {
 				await this.restoreSessionLeaf(leafId);
@@ -303,6 +337,7 @@ export class GenericHarness {
 			}
 		}, {
 			...this.config.retry,
+			classifyError: (error) => classifyModelFailureError(error) ?? classifyProviderError(error),
 			onRetry: async (event) => {
 				await this.emitLocalEvent({
 					type: "retry",
@@ -316,6 +351,33 @@ export class GenericHarness {
 		if (!this.pruneBoundToTurnEnd) await this.pruneAfterTurn();
 		await this.compactAfterTurn();
 		return result;
+	}
+
+	private classifyAssistantModelFailure(message: AssistantMessage) {
+		const profile = this.activeModelProfile();
+		if (!profile) return undefined;
+		return classifyModelFailure(assistantText(message), profile);
+	}
+
+	private activeModelProfile(): ModelProfile | undefined {
+		const activeModel = this.inner.getModel?.();
+		if (activeModel) {
+			const profile = modelProfileForRuntimeModel(activeModel);
+			if (profile) return profile;
+		}
+		return findModelProfile({ provider: this.config.provider, modelId: this.config.modelId });
+	}
+
+	private currentModel(defaultModel?: Model<Api>): Model<Api> {
+		return this.inner.getModel?.() ?? defaultModel ?? resolveHarnessModel(this.config);
+	}
+
+	private effectiveContextWindow(model: Model<Api> = this.currentModel()): number {
+		return this.config.contextWindow ?? modelProfileForRuntimeModel(model)?.window.effective ?? model.contextWindow;
+	}
+
+	private inputCostPerMTok(model: Model<Api> = this.currentModel()): number {
+		return modelProfileForRuntimeModel(model)?.cost.inputPerMTok ?? model.cost.input;
 	}
 
 	async runRequest(input: AgentRequestInput, promptOptions?: AgentHarnessPromptOptions): Promise<AgentRequestResult> {
@@ -466,84 +528,7 @@ export class GenericHarness {
 	}
 
 	getConfig(): ResolvedHarnessConfig {
-		return {
-			...this.config,
-			apiHeaders: this.config.apiHeaders ? { ...this.config.apiHeaders } : undefined,
-			streamOptions: this.config.streamOptions ? { ...this.config.streamOptions } : undefined,
-			tools: this.config.tools ? [...this.config.tools] : undefined,
-			toolRegistrations: this.config.toolRegistrations ? [...this.config.toolRegistrations] : undefined,
-			activeToolNames: this.config.activeToolNames ? [...this.config.activeToolNames] : undefined,
-			resources: this.config.resources ? cloneResources(this.config.resources) : undefined,
-			sandbox: this.config.sandbox
-				? { ...this.config.sandbox, roots: this.config.sandbox.roots ? [...this.config.sandbox.roots] : undefined }
-				: undefined,
-			policy: {
-				defaults: { ...this.config.policy.defaults },
-				tools: this.config.policy.tools ? { ...this.config.policy.tools } : undefined,
-				rules: this.config.policy.rules ? this.config.policy.rules.map((rule) => ({ ...rule })) : undefined,
-			},
-			permissionProfile: this.config.permissionProfile,
-			commandRules: this.config.commandRules ? [...this.config.commandRules] : undefined,
-			runPolicy: this.config.runPolicy
-				? {
-						...this.config.runPolicy,
-						budget: this.config.runPolicy.budget ? { ...this.config.runPolicy.budget } : undefined,
-						repairLimits: this.config.runPolicy.repairLimits ? { ...this.config.runPolicy.repairLimits } : undefined,
-						gateTiers: this.config.runPolicy.gateTiers ? { ...this.config.runPolicy.gateTiers } : undefined,
-					}
-				: undefined,
-			tokenBudgetRatios: this.config.tokenBudgetRatios ? { ...this.config.tokenBudgetRatios } : undefined,
-			compaction: this.config.compaction ? { ...this.config.compaction } : undefined,
-			pruning: { ...this.config.pruning },
-			cache: this.config.cache ? { ...this.config.cache } : undefined,
-			retry: this.config.retry ? { ...this.config.retry } : undefined,
-			budget: this.config.budget ? { ...this.config.budget } : undefined,
-			eventLog: this.config.eventLog ? { ...this.config.eventLog } : undefined,
-			database: this.config.database ? { ...this.config.database } : undefined,
-			scheduler: this.config.scheduler
-				? {
-						...this.config.scheduler,
-						tasks: this.config.scheduler.tasks ? [...this.config.scheduler.tasks] : undefined,
-					}
-				: undefined,
-			reviewLoop: this.config.reviewLoop
-				? {
-						...this.config.reviewLoop,
-						runPolicy: this.config.reviewLoop.runPolicy
-							? {
-									...this.config.reviewLoop.runPolicy,
-									budget: this.config.reviewLoop.runPolicy.budget
-										? { ...this.config.reviewLoop.runPolicy.budget }
-										: undefined,
-									repairLimits: this.config.reviewLoop.runPolicy.repairLimits
-										? { ...this.config.reviewLoop.runPolicy.repairLimits }
-										: undefined,
-									gateTiers: this.config.reviewLoop.runPolicy.gateTiers
-										? { ...this.config.reviewLoop.runPolicy.gateTiers }
-										: undefined,
-								}
-							: undefined,
-					}
-				: undefined,
-			internal: this.config.internal
-				? {
-						spawnAgentDepth: this.config.internal.spawnAgentDepth,
-						inheritedPolicy: this.config.internal.inheritedPolicy
-							? {
-									defaults: this.config.internal.inheritedPolicy.defaults
-										? { ...this.config.internal.inheritedPolicy.defaults }
-										: undefined,
-									tools: this.config.internal.inheritedPolicy.tools
-										? { ...this.config.internal.inheritedPolicy.tools }
-										: undefined,
-									rules: this.config.internal.inheritedPolicy.rules
-										? this.config.internal.inheritedPolicy.rules.map((rule) => ({ ...rule }))
-										: undefined,
-								}
-							: undefined,
-					}
-				: undefined,
-		};
+		return cloneResolvedHarnessConfig(this.config);
 	}
 
 	getCacheReport(): string {
@@ -578,8 +563,27 @@ export class GenericHarness {
 					this.pruneExecutor?.handleQueueUpdate(event);
 				}
 				if (event.type === "turn_end") {
+					// Re-check after each provider turn: a single agentic prompt spanning many
+					// turns must not run past the hard session budget before the next prompt.
+					const budgetDecision = this.budgetTracker?.checkBeforeTurn();
+					if (budgetDecision && !budgetDecision.allowed) {
+						await this.emitLocalEvent({
+							type: "budget_refused",
+							spentUsd: budgetDecision.spentUsd,
+							message: budgetDecision.message,
+						});
+						// Fire-and-forget: abort() flips the run's AbortController synchronously but
+						// then awaits idle, which would deadlock inside this awaited subscriber.
+						void this.inner.abort().catch(() => undefined);
+					}
 					const turn = this.costTracker.getLastTurn();
-					if (turn) this.cacheReportTracker.recordTurn(turn);
+					if (turn) {
+						if (this.pendingCacheDecision) {
+							this.cacheReportTracker.recordDecision(this.pendingCacheDecision, turn.turnIndex);
+							this.pendingCacheDecision = undefined;
+						}
+						this.cacheReportTracker.recordTurn(turn);
+					}
 					await this.pruneAfterTurn();
 				}
 			}),
@@ -627,7 +631,7 @@ export class GenericHarness {
 
 	private async compactAfterTurn(): Promise<void> {
 		if (!this.session || !this.inner.compact) return;
-		const contextWindow = this.config.contextWindow ?? resolveHarnessModel(this.config).contextWindow;
+		const contextWindow = this.effectiveContextWindow();
 		const policy = new CompactionPolicy({
 			contextWindow,
 			ratios: this.config.tokenBudgetRatios,
@@ -687,7 +691,7 @@ export class GenericHarness {
 	}
 
 	private predictedInputCostUsd(tokens: number): number {
-		return (resolveHarnessModel(this.config).cost.input / 1_000_000) * tokens;
+		return (this.inputCostPerMTok() / 1_000_000) * tokens;
 	}
 
 	private async emitLocalEvent(event: Record<string, unknown>): Promise<void> {
@@ -707,14 +711,41 @@ export class GenericHarness {
 function assistantMessageError(message: AssistantMessage): AssistantMessageError | undefined {
 	if (message.stopReason !== "error") return undefined;
 	const errorMessage = message.errorMessage ?? "provider returned an error";
-	return new AssistantMessageError(errorMessage, extractStatusCode(errorMessage));
+	return new AssistantMessageError(errorMessage, extractStatusCode(message));
 }
 
-function extractStatusCode(message: string): number | undefined {
-	const match = /\b([1-5][0-9]{2})\b/.exec(message);
-	if (!match) return undefined;
-	const status = Number(match[1]);
-	return Number.isFinite(status) ? status : undefined;
+function assistantText(message: AssistantMessage): string {
+	const content = message.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => {
+			if (!part || typeof part !== "object") return "";
+			if (!("type" in part) || part.type !== "text") return "";
+			return "text" in part && typeof part.text === "string" ? part.text : "";
+		})
+		.join("");
+}
+
+function extractStatusCode(value: unknown, depth = 0): number | undefined {
+	if (depth > 4) return undefined;
+	const record = asRecord(value);
+	if (!record) return undefined;
+
+	const direct = statusCodeFromField(record, "status") ?? statusCodeFromField(record, "statusCode");
+	if (direct !== undefined) return direct;
+
+	for (const key of ["response", "error", "cause"] as const) {
+		const nested = extractStatusCode(record[key], depth + 1);
+		if (nested !== undefined) return nested;
+	}
+	return undefined;
+}
+
+function statusCodeFromField(record: Record<string, unknown>, key: string): number | undefined {
+	const value = record[key];
+	if (typeof value !== "number" || !Number.isInteger(value)) return undefined;
+	return value >= 100 && value <= 599 ? value : undefined;
 }
 
 function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
@@ -734,6 +765,82 @@ function toProviderTools(tools: readonly AgentTool[] | undefined): Tool[] | unde
 		description: tool.description,
 		parameters: tool.parameters,
 	}));
+}
+
+const COST_DRIFT_TOLERANCE = 1e-9;
+
+function tryResolveHarnessModel(config: ResolvedHarnessConfig): Model<Api> | undefined {
+	try {
+		return resolveHarnessModel(config);
+	} catch {
+		return undefined;
+	}
+}
+
+function modelProfileForRuntimeModel(model: Model<Api>): ModelProfile | undefined {
+	return findModelProfileForModel({
+		provider: model.provider,
+		modelId: model.id,
+		...(model.baseUrl ? { baseUrl: model.baseUrl } : {}),
+	});
+}
+
+function warnIfModelProfileCostDrift(model: Model<Api>): void {
+	const profile = modelProfileForRuntimeModel(model);
+	if (!profile) return;
+	const drifts: string[] = [];
+	addCostDrift(drifts, "input", profile.cost.inputPerMTok, model.cost.input);
+	addCostDrift(drifts, "output", profile.cost.outputPerMTok, model.cost.output);
+	if (profile.cost.cacheReadPerMTok !== undefined) {
+		addCostDrift(drifts, "cacheRead", profile.cost.cacheReadPerMTok, model.cost.cacheRead);
+	}
+	if (drifts.length === 0) return;
+	console.warn(`ModelProfile cost drift for ${profile.id}: ${drifts.join("; ")}`);
+}
+
+function addCostDrift(
+	drifts: string[],
+	field: string,
+	profileValue: number,
+	registryValue: number,
+): void {
+	if (Math.abs(profileValue - registryValue) <= COST_DRIFT_TOLERANCE) return;
+	drifts.push(`${field} profile=${profileValue} registry=${registryValue}`);
+}
+
+const CUSTOM_TOOL_ACCESS_LEVEL: ToolAccessLevel = "destructive";
+
+function createRuntimeToolRegistry(
+	defaultRegistry: ToolRegistry | undefined,
+	registrations: readonly StoredToolRegistration[] | undefined,
+	tools: readonly AgentTool[] | undefined,
+): ToolRegistry | undefined {
+	if (!defaultRegistry && (!registrations || registrations.length === 0) && (!tools || tools.length === 0)) {
+		return undefined;
+	}
+	const registry = new ToolRegistry();
+	const registered = new Map<string, AgentTool>();
+	const addRegistration = (registration: ToolRegistration): void => {
+		const name = registration.tool.name;
+		const previous = registered.get(name);
+		if (previous) {
+			if (previous === registration.tool) return;
+			throw new Error(`Duplicate runtime tool name ${name}`);
+		}
+		registry.register(registration);
+		registered.set(name, registration.tool);
+	};
+	for (const registration of defaultRegistry?.listRegistrations() ?? []) addRegistration(registration);
+	for (const registration of registrations ?? []) addRegistration(registration);
+	for (const tool of tools ?? []) {
+		const previous = registered.get(tool.name);
+		if (previous) {
+			if (previous === tool) continue;
+			throw new Error(`Duplicate runtime tool name ${tool.name}`);
+		}
+		addRegistration({ tool, accessLevel: CUSTOM_TOOL_ACCESS_LEVEL });
+	}
+	return registry;
 }
 
 function selectActiveTools(tools: AgentTool[] | undefined, activeToolNames: readonly string[] | undefined): AgentTool[] | undefined {
@@ -839,6 +946,23 @@ function cloneResources(resources: AgentHarnessResources): AgentHarnessResources
 		promptTemplates: resources.promptTemplates ? [...resources.promptTemplates] : undefined,
 		skills: resources.skills ? [...resources.skills] : undefined,
 	};
+}
+
+type RuntimeConfigKey = "askPermission" | "cache" | "resources" | "toolRegistrations" | "tools";
+type StructuredCloneableHarnessConfig = Omit<ResolvedHarnessConfig, RuntimeConfigKey>;
+
+function cloneResolvedHarnessConfig(config: ResolvedHarnessConfig): ResolvedHarnessConfig {
+	const { askPermission, cache, resources, toolRegistrations, tools, ...cloneable } = config;
+	const structuredCloneable: StructuredCloneableHarnessConfig = cloneable;
+	const cloned = structuredClone(structuredCloneable);
+	return {
+		...cloned,
+		...(askPermission ? { askPermission } : {}),
+		...(cache ? { cache: { ...cache } } : {}),
+		...(resources ? { resources: cloneResources(resources) } : {}),
+		...(toolRegistrations ? { toolRegistrations: [...toolRegistrations] } : {}),
+		...(tools ? { tools: [...tools] } : {}),
+	} satisfies ResolvedHarnessConfig;
 }
 
 export async function createGenericHarness(config?: HarnessConfig): Promise<GenericHarness> {

@@ -204,9 +204,8 @@ export class CacheReportTracker {
 	getEntries(): CacheReportEntry[] {
 		const entries: CacheReportEntry[] = [];
 		const pruneRecovery: PruneRecoveryState = {};
-		for (const [index, turn] of this.turns.entries()) {
-			const record =
-				this.decisions.find((entry) => entry.turnIndex === turn.turnIndex) ?? this.decisions[index];
+		for (const turn of this.turns) {
+			const record = this.decisions.find((entry) => entry.turnIndex === turn.turnIndex);
 			if (!record) continue;
 			const actualHitRate = turn.cacheHitRate;
 			const pruneEvents = this.pruneEvents

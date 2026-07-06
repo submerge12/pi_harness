@@ -1,5 +1,7 @@
 export { createReviewGate } from "./review-gate.ts";
 export { crossCheckEvidence } from "./evidence-cross-check.ts";
+export { parseAcceptanceCriterion, parseAcceptanceCriteria } from "./acceptance-criteria.ts";
+export type { AcceptanceCriterion } from "./acceptance-criteria.ts";
 export {
 	createGateReviewerAgent,
 	createReviewerAgent,
@@ -9,6 +11,7 @@ export {
 	isReviewVerdict,
 	reviewFindingSchema,
 	reviewFindingSeveritySchema,
+	reviewDiffOriginSchema,
 	reviewPhaseSchema,
 	reviewRerunSchema,
 	reviewVerdictSchema,
@@ -17,6 +20,7 @@ export {
 export type {
 	ReviewFinding,
 	ReviewFindingSeverity,
+	ReviewDiffOrigin,
 } from "./verdict.ts";
 export type {
 	BlindReviewer,
