@@ -208,9 +208,9 @@ const generateMealPlanParams = Type.Object({
 });
 
 const swapMealParams = Type.Object({
-	date: Type.String(),
-	mealType: Type.String(),
-	alternateSlug: Type.String(),
+	date: Type.String(), // YYYY-MM-DD
+	mealType: Type.String(), // "lunch" | "dinner"
+	alternateSlug: Type.String(), // MUST be one of the entry's pre-vetted alternates; others are rejected
 });
 
 const recipeRecommendParams = Type.Object({
@@ -424,7 +424,7 @@ export function createCompassHealthToolRegistrations(
 			tool: {
 				name: "swap_meal",
 				label: "Swap Meal",
-				description: "Swap a planned lunch/dinner for an alternate dish and re-balance the day's staple and protein.",
+				description: "Swap a planned lunch/dinner to one of its pre-vetted alternates and re-balance the day's staple and protein. Non-alternate targets are rejected.",
 				parameters: swapMealParams,
 				async execute(toolCallId, params: any) {
 					return await executeWriteTool(factoryContext, toolCallId, "swap_meal", async () =>
