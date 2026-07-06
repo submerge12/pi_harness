@@ -9,10 +9,25 @@ dist/
 .ai/checkpoints/
 .evidence-local/
 
-# Local documentation/planning notes
-docs/
+# Local documentation/planning notes.
+# docs/ is local by default; timeless design docs are explicitly re-included below.
+docs/*
+!docs/AGENT-ARCHITECTURE.md
+!docs/agent-design-guide.md
+!docs/specialization-guide.md
+!docs/context-cache-design.md
+!docs/request-lifecycle-architecture.md
+!docs/harness-engineering-framework.md
+!docs/file-responsibility-summary.md
 NEXT-STEPS.md
 status-report.jsonl
+
+# Local process records: phase plans, execution logs, experiments (kept locally, not uploaded)
+PLAN.md
+PLAN-agents.md
+PLAN-cache-pruning.md
+experiments/
+.agents/
 
 # Local secrets
 .env

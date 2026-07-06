@@ -92,7 +92,8 @@ describe("repair-plan exit criteria (end-to-end)", () => {
 	// PLAN-repair exit criterion 2: one FAIL → rewind → PASS run must report completed,
 	// restore bash-written files between attempts, and cite a git diff, all through the
 	// default createAgent wiring.
-	it("repairs a failing attempt, restores bash writes, and completes with git-cited verdicts", async () => {
+	// Real git + two spawned reviewer agents: needs headroom beyond the 5s default under full-suite load.
+	it("repairs a failing attempt, restores bash writes, and completes with git-cited verdicts", { timeout: 30_000 }, async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "pi-exit-criterion-2-"));
 		await mkdir(join(cwd, "src"), { recursive: true });
 		await writeFile(join(cwd, "src", "result.txt"), "before\n", "utf8");
@@ -181,7 +182,7 @@ describe("repair-plan exit criteria (end-to-end)", () => {
 	// PLAN-repair exit criterion 1: a single run in which a tool output carries a seeded
 	// secret must leave zero unmasked occurrences across events.jsonl, evidence files,
 	// the worker-reviewer trace, and human-gate persistence.
-	it("keeps a seeded secret out of every persisted artifact of one run", async () => {
+	it("keeps a seeded secret out of every persisted artifact of one run", { timeout: 30_000 }, async () => {
 		const SECRET = "sk-e2e-seeded-secret-123456789";
 		const faux = registerFauxProvider({
 			api: "openai-completions",

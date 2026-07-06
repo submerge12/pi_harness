@@ -126,8 +126,13 @@ together.
 - `docs/agent-design-guide.md` / `docs/specialization-guide.md` — how to build a new profile.
 - `docs/context-cache-design.md` — context eviction, cache recovery, tool-set stability.
 - `docs/request-lifecycle-architecture.md` — the request pipeline.
-- `docs/worker-reviewer-loop-plan.md` (+ repair/completion) — the repair loop.
 - `docs/file-responsibility-summary.md` — per-file inventory (keep in sync when adding files).
 - `docs/harness-engineering-framework.md` — engineering principles.
-- `PLAN.md`, `PLAN-agents.md`, `PLAN-cache-pruning.md` — phased build plans; `docs/*-execution-log.md` track what was done.
 - `construction.md` — broad (Chinese) architecture overview.
+- `PLAN-repair.md` — the post-review repair plan with its review standards and amendments.
+
+Local-only process records (git-ignored, not in the public repo): `PLAN.md`,
+`PLAN-agents.md`, `PLAN-cache-pruning.md` (phased build plans),
+`docs/worker-reviewer-loop-plan.md` (+ repair/completion), the
+`docs/*-execution-log.md` files, `docs/full-process-record.md` (the consolidated
+plan → issues → solutions narrative), and `experiments/`.

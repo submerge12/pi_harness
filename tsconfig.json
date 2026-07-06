@@ -9,7 +9,21 @@
 		"erasableSyntaxOnly": true,
 		"noEmit": true,
 		"skipLibCheck": true,
-		"types": ["node", "vitest"]
+		"types": ["node", "vitest"],
+		"paths": {
+			"compass-health-agent": [
+				"./node_modules/compass-health-agent/dist/index.d.ts",
+				"./types/compass-health-agent/index.d.ts"
+			],
+			"compass-health-agent/tools/handlers": [
+				"./node_modules/compass-health-agent/dist/tools/handlers.d.ts",
+				"./types/compass-health-agent/tools-handlers.d.ts"
+			],
+			"compass-health-agent/tools/context": [
+				"./node_modules/compass-health-agent/dist/tools/context.d.ts",
+				"./types/compass-health-agent/tools-context.d.ts"
+			]
+		}
 	},
-	"include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx"]
+	"include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "test/**/*.tsx", "types/**/*.d.ts"]
 }

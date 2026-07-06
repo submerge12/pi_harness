@@ -42,7 +42,6 @@
 	"dependencies": {
 		"@earendil-works/pi-agent-core": "0.76.0",
 		"@earendil-works/pi-ai": "0.76.0",
-		"compass-health-agent": "file:../compass-health-agent",
 		"drizzle-orm": "^0.45.2",
 		"ink": "^7.1.0",
 		"ink-text-input": "^6.0.0",
@@ -52,6 +51,9 @@
 		"react": "^19.2.7",
 		"react-devtools-core": "^6.1.5",
 		"typebox": "1.1.38"
+	},
+	"optionalDependencies": {
+		"compass-health-agent": "file:../compass-health-agent"
 	},
 	"devDependencies": {
 		"@types/marked-terminal": "^6.1.1",
