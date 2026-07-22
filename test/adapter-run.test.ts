@@ -71,6 +71,79 @@ function fakeHarness(calls: unknown[]): PiRuntimeHarness & { dispose(): Promise<
 	};
 }
 
+function fakeInvalidRuntimeEnvelopeHarness(
+	calls: unknown[],
+	disposals: { count: number },
+): PiRuntimeHarness & { dispose(): Promise<void> } {
+	return {
+		getConfig: () => ({ activeToolNames: ["nutrition_estimate"], thinkingLevel: "off" }),
+		runRequest: async (input) => {
+			calls.push(input);
+			return {
+				entryStage: "execute",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "runtime emitted malformed usage" }],
+					api: "openai-completions",
+					provider: "deepseek",
+					model: "deepseek-v4-pro",
+					usage: {
+						input: "not-a-number",
+						output: 7,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 18,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+				evidenceRefs: ["PI_EVIDENCE_1"],
+				stageTrace: [],
+				recalledMemories: [],
+				writtenMemories: [],
+			} as unknown as Awaited<ReturnType<PiRuntimeHarness["runRequest"]>>;
+		},
+		dispose: async () => {
+			disposals.count++;
+		},
+	};
+}
+
+function fakeRuntimeFailedHarness(calls: unknown[]): PiRuntimeHarness & { dispose(): Promise<void> } {
+	return {
+		getConfig: () => ({ activeToolNames: ["nutrition_estimate"], thinkingLevel: "off" }),
+		runRequest: async (input) => {
+			calls.push(input);
+			return {
+				entryStage: "execute",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "runtime completed with failed status" }],
+					api: "openai-completions",
+					provider: "deepseek",
+					model: "deepseek-v4-pro",
+					usage: {
+						input: 11,
+						output: 7,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 18,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 },
+					},
+					stopReason: "error",
+					timestamp: 1,
+				},
+				evidenceRefs: ["PI_EVIDENCE_1"],
+				stageTrace: [],
+				recalledMemories: [],
+				writtenMemories: [],
+			};
+		},
+		dispose: async () => {},
+	};
+}
+
 describe("adapter-run entrypoint", () => {
 	it("reads a TaskContract from stdin and writes only NormalizedResult JSON to stdout", async () => {
 		const stdout = memoryWriter();
@@ -118,5 +191,65 @@ describe("adapter-run entrypoint", () => {
 		expect(Value.Check(normalizedResultSchema, output)).toBe(true);
 		expect(output.status).toBe("failed");
 		expect(output.message).toContain("Invalid TaskContract");
+	});
+
+	it("keeps schema-valid runtime failed results as exit 0 invocation successes", async () => {
+		const stdout = memoryWriter();
+		const stderr = memoryWriter();
+		const calls: unknown[] = [];
+
+		const exitCode = await runAdapterCommand({
+			args: [],
+			stdin: stdinFrom(JSON.stringify(taskContract)),
+			stdout,
+			stderr,
+			createHarness: async () => fakeRuntimeFailedHarness(calls),
+		});
+
+		const output = JSON.parse(stdout.text()) as unknown;
+		expect(exitCode).toBe(0);
+		expect(stderr.text()).toBe("");
+		expect(calls).toEqual([{ taskContract }]);
+		expect(Value.Check(normalizedResultSchema, output)).toBe(true);
+		expect(output).toMatchObject({
+			status: "failed",
+			evidenceRefs: ["PI_EVIDENCE_1"],
+			usage: { inputTokens: 11, outputTokens: 7, costUsd: 0.001 },
+			message: "runtime completed with failed status",
+		});
+	});
+
+	it("returns exit 1 when runtime output is normalized to a failed schema-valid result", async () => {
+		const stdout = memoryWriter();
+		const stderr = memoryWriter();
+		const calls: unknown[] = [];
+		const disposals = { count: 0 };
+
+		const exitCode = await runAdapterCommand({
+			args: [],
+			stdin: stdinFrom(JSON.stringify(taskContract)),
+			stdout,
+			stderr,
+			createHarness: async () => fakeInvalidRuntimeEnvelopeHarness(calls, disposals),
+		});
+
+		const stdoutText = stdout.text();
+		const documents = stdoutText.trimEnd().split("\n");
+		const output = JSON.parse(documents[0] ?? "null") as unknown;
+
+		expect(exitCode).toBe(1);
+		expect(stderr.text()).toBe("");
+		expect(calls).toEqual([{ taskContract }]);
+		expect(disposals.count).toBe(1);
+		expect(stdoutText.endsWith("\n")).toBe(true);
+		expect(documents).toHaveLength(1);
+		expect(Value.Check(normalizedResultSchema, output)).toBe(true);
+		expect(output).toMatchObject({
+			status: "failed",
+			testResults: [],
+			evidenceRefs: [],
+			usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+			message: "PI runtime returned an invalid NormalizedResult: /usage/inputTokens must be number",
+		});
 	});
 });

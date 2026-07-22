@@ -62,8 +62,9 @@ export async function runAdapterCommand(options: AdapterRunCommandOptions = {}):
 		const taskContract = parseTaskContract(await readTaskContractInput(parsed, input));
 		harness = await createHarness({ agent: parsed.agent, cwd: parsed.cwd });
 		const result = await createPiRuntimeAdapter(harness).run(taskContract);
-		writeNormalizedResult(out, normalizeRunnerOutput(result));
-		return 0;
+		const normalizedResult = normalizeRunnerOutput(result);
+		writeNormalizedResult(out, normalizedResult);
+		return normalizedResult === result ? 0 : 1;
 	} catch (error) {
 		writeNormalizedResult(out, failedResult(errorMessage(error)));
 		if (err === stderr && process.env.PI_ADAPTER_RUN_DEBUG === "1") {
