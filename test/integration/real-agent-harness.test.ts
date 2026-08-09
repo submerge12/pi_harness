@@ -1,10 +1,10 @@
 import { InMemorySessionRepo } from "@earendil-works/pi-agent-core";
 import type { AgentMessage, AgentTool, ExecutionEnv, FileInfo, Session } from "@earendil-works/pi-agent-core";
 import {
+	createModels,
 	fauxAssistantMessage,
+	fauxProvider,
 	fauxToolCall,
-	registerFauxProvider,
-	resetApiProviders,
 	type AssistantMessage,
 	type Context,
 	type SimpleStreamOptions,
@@ -43,7 +43,6 @@ const denyDestructivePolicy = {
 } satisfies NonNullable<HarnessConfig["policy"]>;
 
 afterEach(() => {
-	resetApiProviders();
 	vi.restoreAllMocks();
 });
 
@@ -70,6 +69,7 @@ describe("real AgentHarness integration", () => {
 				tools: [tool],
 			},
 			env: fakeEnv(),
+			models: faux.modelsCollection,
 			session,
 		});
 		const toolResults: Array<{ isError: boolean; text: string }> = [];
@@ -113,6 +113,7 @@ describe("real AgentHarness integration", () => {
 				tools: [sideEffectTool(async () => "unused")],
 			},
 			env: fakeEnv(),
+			models: faux.modelsCollection,
 			session,
 		});
 
@@ -127,7 +128,10 @@ describe("real AgentHarness integration", () => {
 		let providerOptions: SimpleStreamOptions | undefined;
 		faux.setResponses([
 			(_context, options) => {
-				providerOptions = { cacheRetention: options?.cacheRetention };
+				providerOptions = {
+					cacheRetention: options?.cacheRetention,
+					headers: options?.headers,
+				};
 				return fauxAssistantMessage("cached ok");
 			},
 		]);
@@ -135,17 +139,26 @@ describe("real AgentHarness integration", () => {
 		const harness = new GenericHarness({
 			config: {
 				apiKey: "test-key",
+				apiHeaders: { "x-api": "api" },
 				cache: { enabled: true },
-				streamOptions: { cacheRetention: "long" },
+				streamOptions: {
+					cacheRetention: "long",
+					headers: { "x-stream": "stream" },
+				},
 				useDefaultTools: false,
 			},
 			env: fakeEnv(),
+			models: faux.modelsCollection,
 			session,
 		});
 
 		await harness.prompt("hello");
 
 		expect(providerOptions?.cacheRetention).toBe("short");
+		expect(providerOptions?.headers).toMatchObject({
+			"x-api": "api",
+			"x-stream": "stream",
+		});
 		expect(harness.getCacheReport()).toContain("expected automatic-prefix");
 	});
 
@@ -178,6 +191,7 @@ describe("real AgentHarness integration", () => {
 				tools: [tool],
 			},
 			env: fakeEnv(),
+			models: faux.modelsCollection,
 			session,
 		});
 		const localEvents: Array<{ type: string }> = [];
@@ -222,6 +236,7 @@ describe("real AgentHarness integration", () => {
 				tools: [tool],
 			},
 			env: fakeEnv(),
+			models: faux.modelsCollection,
 			session,
 		});
 
@@ -236,7 +251,7 @@ describe("real AgentHarness integration", () => {
 });
 
 function registerLocalOpenAiFaux() {
-	return registerFauxProvider({
+	const faux = fauxProvider({
 		api: "openai-completions",
 		provider: "deepseek",
 		tokensPerSecond: 0,
@@ -252,6 +267,9 @@ function registerLocalOpenAiFaux() {
 			},
 		],
 	});
+	const modelsCollection = createModels();
+	modelsCollection.setProvider(faux.provider);
+	return Object.assign(faux, { modelsCollection });
 }
 
 function sideEffectTool(run: (value: string) => Promise<string> | string): AgentTool {

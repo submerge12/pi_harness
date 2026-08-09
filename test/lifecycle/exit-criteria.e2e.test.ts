@@ -4,13 +4,13 @@ import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	createModels,
 	fauxAssistantMessage,
+	fauxProvider,
 	fauxToolCall,
-	registerFauxProvider,
-	resetApiProviders,
 } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	createAgent,
 	createPiRuntimeAdapter,
@@ -83,10 +83,6 @@ async function listFilesRecursively(dir: string): Promise<string[]> {
 	}
 	return files;
 }
-
-afterEach(() => {
-	resetApiProviders();
-});
 
 describe("repair-plan exit criteria (end-to-end)", () => {
 	// PLAN-repair exit criterion 2: one FAIL → rewind → PASS run must report completed,
@@ -184,7 +180,7 @@ describe("repair-plan exit criteria (end-to-end)", () => {
 	// the worker-reviewer trace, and human-gate persistence.
 	it("keeps a seeded secret out of every persisted artifact of one run", { timeout: 30_000 }, async () => {
 		const SECRET = "sk-e2e-seeded-secret-123456789";
-		const faux = registerFauxProvider({
+		const faux = fauxProvider({
 			api: "openai-completions",
 			provider: "deepseek",
 			tokensPerSecond: 0,
@@ -198,6 +194,8 @@ describe("repair-plan exit criteria (end-to-end)", () => {
 				input: ["text"],
 			}],
 		});
+		const models = createModels();
+		models.setProvider(faux.provider);
 		faux.setResponses([
 			fauxAssistantMessage(fauxToolCall("leak_env", {}, { id: "call-leak" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage(`PI_HARNESS_DONE\nDEEPSEEK_API_KEY=${SECRET}\nbare ${SECRET}\ndone`),
@@ -259,6 +257,7 @@ describe("repair-plan exit criteria (end-to-end)", () => {
 			env,
 			session,
 			apiKey: SECRET,
+			models,
 			reviewLoop: { enabled: true, maxAttempts: 1 },
 		});
 

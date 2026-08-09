@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { completeSimple } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { runPromptedJsonToolLoop } from "../model-adapters/prompted-json.ts";
 import { resolveModel } from "../model-resolver.ts";
 import type { ConformanceClient } from "./runner.ts";
@@ -16,8 +16,9 @@ export interface LiveConformanceClientOptions {
  * declared toolCalling mode (native or prompted-json) is what actually gets tested.
  */
 export function createLiveConformanceClient(options: LiveConformanceClientOptions): ConformanceClient {
+	const models = builtinModels();
 	return async ({ task, prompt, tools, profile }) => {
-		const model = resolveModel(profile.provider, profile.modelId);
+		const model = resolveModel(profile.provider, profile.modelId, models);
 		const agentTools = tools.map((tool) => toAgentTool(tool));
 		const loop = await runPromptedJsonToolLoop({
 			profile,
@@ -27,7 +28,7 @@ export function createLiveConformanceClient(options: LiveConformanceClientOption
 			maxTurns: options.maxTurns ?? 8,
 			permission: { mode: "trusted-in-memory-tools" },
 			complete: async ({ systemPrompt, messages }) =>
-				await completeSimple(
+				await models.completeSimple(
 					model,
 					{
 						systemPrompt,

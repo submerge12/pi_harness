@@ -2,7 +2,8 @@
 import process, { argv as processArgv, stderr, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
-import { getProviders, type KnownProvider } from "@earendil-works/pi-ai";
+import type { KnownProvider } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { createAgent } from "../agents/create-agent.ts";
 import type { AgentProfile } from "../agents/profile.ts";
 import { registerBuiltInProfiles } from "../agents/profiles/index.ts";
@@ -49,8 +50,8 @@ type HarnessConfigWithScheduler = HarnessConfig & {
 
 function resolveProvider(provider: string | undefined): KnownProvider | undefined {
 	if (!provider) return undefined;
-	const knownProviders = getProviders();
-	if (knownProviders.includes(provider as KnownProvider)) return provider as KnownProvider;
+	const knownProviders = builtinModels().getProviders().map((candidate) => candidate.id);
+	if (knownProviders.includes(provider)) return provider as KnownProvider;
 	throw new Error(`unknown provider: ${provider}`);
 }
 

@@ -17,8 +17,8 @@ import {
 	type Skill,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { completeSimple, getEnvApiKey } from "@earendil-works/pi-ai";
-import type { Api, AssistantMessage, KnownProvider, Message, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
+import { getEnvApiKey } from "@earendil-works/pi-ai/compat";
+import type { Api, AssistantMessage, KnownProvider, Message, Model, Models, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
 import { isAbsolute, resolve } from "node:path";
 import { CacheStrategyEngine } from "./cache/strategy-engine.ts";
 import type { CacheStrategyDecision } from "./cache/types.ts";
@@ -50,6 +50,7 @@ import {
 	findModelProfileForModel,
 } from "./model-profiles/registry.ts";
 import { resolveHarnessModel, resolveModel } from "./model-resolver.ts";
+import { createHarnessModels } from "./models.ts";
 import { BudgetTracker } from "./observability/budget.ts";
 import { CacheReportTracker } from "./observability/cache-report.ts";
 import { CostTracker } from "./observability/cost-tracker.ts";
@@ -186,6 +187,7 @@ export interface GenericHarnessOptions {
 	budgetTracker?: BudgetTracker;
 	costTracker?: CostTracker;
 	permissionDecisions?: ToolPermissionDecisionStore;
+	models?: Models;
 }
 
 export interface GenericHarnessRuntimeOptions {
@@ -196,6 +198,7 @@ export interface GenericHarnessRuntimeOptions {
 	budgetTracker?: BudgetTracker;
 	costTracker?: CostTracker;
 	permissionDecisions?: ToolPermissionDecisionStore;
+	models?: Models;
 }
 
 export class GenericHarness {
@@ -205,6 +208,7 @@ export class GenericHarness {
 	private readonly costTracker: CostTracker;
 	private pendingCacheDecision?: CacheStrategyDecision;
 	private readonly env?: ExecutionEnv;
+	private readonly models: Models;
 	private readonly session?: Session;
 	private readonly inner: GenericHarnessInner;
 	private readonly requestLifecycle: ReturnType<typeof createRequestLifecycleDeps>;
@@ -221,11 +225,12 @@ export class GenericHarness {
 		registerKnownSecret(this.config.apiKey);
 		registerKnownSecret(getEnvApiKey(this.config.provider));
 		this.env = options.env;
+		this.models = options.models ?? createHarnessModels(this.config);
 		this.session = options.session;
 		this.budgetTracker = options.budgetTracker ?? (this.config.budget ? new BudgetTracker(this.config.budget) : undefined);
 		this.costTracker = options.costTracker ?? new CostTracker();
 		this.requestLifecycle = createRequestLifecycleDeps(this.config, options.requestLifecycle);
-		const startupModel = tryResolveHarnessModel(this.config);
+		const startupModel = tryResolveHarnessModel(this.config, this.models);
 		if (startupModel) warnIfModelProfileCostDrift(startupModel);
 		this.inner = options.inner ?? this.createInner(options);
 		if (options.inner) this.configurePruneExecutor(options.session);
@@ -236,7 +241,7 @@ export class GenericHarness {
 		if (!options.env) throw new Error("GenericHarness requires env when inner is not provided");
 		if (!options.session) throw new Error("GenericHarness requires session when inner is not provided");
 
-		const model = resolveHarnessModel(this.config);
+		const model = resolveHarnessModel(this.config, this.models);
 		const permissionDecisions = options.permissionDecisions ?? new ToolPermissionDecisionStore();
 		const evidenceGateway = recordEvidenceGatewayEntries(
 			options.evidenceGateway,
@@ -270,18 +275,15 @@ export class GenericHarness {
 			await this.prewarmPrunedContext(model, activeTools);
 		});
 		const inner = new AgentHarness({
-			activeToolNames: this.config.activeToolNames,
-			env: options.env,
-			getApiKeyAndHeaders: async (model: Model<Api>) =>
-				await resolveApiKeyAndHeaders({
-					apiKey: this.config.apiKey,
-					apiHeaders: this.config.apiHeaders,
-					provider: model.provider,
-				}),
+			activeToolNames: activeTools?.map((tool) => tool.name),
 			model,
+			models: this.models,
 			session: options.session,
 			resources: this.config.resources,
-			streamOptions: this.config.streamOptions,
+			streamOptions: {
+				...this.config.streamOptions,
+				headers: mergeHeaders(this.config.streamOptions?.headers, this.config.apiHeaders),
+			},
 			systemPrompt: this.config.systemPrompt,
 			thinkingLevel: this.config.thinkingLevel,
 			tools,
@@ -369,7 +371,7 @@ export class GenericHarness {
 	}
 
 	private currentModel(defaultModel?: Model<Api>): Model<Api> {
-		return this.inner.getModel?.() ?? defaultModel ?? resolveHarnessModel(this.config);
+		return this.inner.getModel?.() ?? defaultModel ?? resolveHarnessModel(this.config, this.models);
 	}
 
 	private effectiveContextWindow(model: Model<Api> = this.currentModel()): number {
@@ -466,7 +468,7 @@ export class GenericHarness {
 
 	async setModel(provider: KnownProvider, modelId: string): Promise<void> {
 		if (!this.inner.setModel) throw new Error("model changes unsupported");
-		await this.inner.setModel(resolveModel(provider, modelId));
+		await this.inner.setModel(resolveModel(provider, modelId, this.models));
 	}
 
 	getThinkingLevel(): ThinkingLevel | undefined {
@@ -611,7 +613,7 @@ export class GenericHarness {
 		const context = await this.session.buildContext();
 		const metadata = await this.session.getMetadata();
 		const messages = this.pruneExecutor?.rewriteContext(context.messages) ?? context.messages;
-		const response = await completeSimple(
+		const response = await this.models.completeSimple(
 			model,
 			{
 				systemPrompt: this.config.systemPrompt,
@@ -769,9 +771,9 @@ function toProviderTools(tools: readonly AgentTool[] | undefined): Tool[] | unde
 
 const COST_DRIFT_TOLERANCE = 1e-9;
 
-function tryResolveHarnessModel(config: ResolvedHarnessConfig): Model<Api> | undefined {
+function tryResolveHarnessModel(config: ResolvedHarnessConfig, models: Models): Model<Api> | undefined {
 	try {
-		return resolveHarnessModel(config);
+		return resolveHarnessModel(config, models);
 	} catch {
 		return undefined;
 	}

@@ -4,7 +4,7 @@ import type {
 	JsonlSessionMetadata,
 	Session,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Models } from "@earendil-works/pi-ai";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -115,6 +115,7 @@ export async function createAgent(profile: AgentProfile, options: CreateAgentOpt
 		requestLifecycle,
 		budgetTracker: providedBudgetTracker,
 		costTracker: providedCostTracker,
+		models: providedModels,
 		...overrides
 	} = options;
 	const permissionDecisions = new ToolPermissionDecisionStore();
@@ -139,6 +140,7 @@ export async function createAgent(profile: AgentProfile, options: CreateAgentOpt
 		getActiveLease,
 		budgetTracker,
 		costTracker,
+		models: providedModels,
 	});
 	const runtimeEvidenceGateway = recordEvidenceGatewayEntries(
 		baseEvidenceGateway,
@@ -155,6 +157,7 @@ export async function createAgent(profile: AgentProfile, options: CreateAgentOpt
 		costTracker,
 		...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
 		permissionDecisions,
+		...(providedModels ? { models: providedModels } : {}),
 	};
 	const registry = await createRegistry(profile, env, resolvedConfig, {
 		...runtimeOptions,
@@ -189,6 +192,7 @@ interface BuildRequestLifecycleRuntimeInput {
 	getActiveLease?: GenericHarnessRuntimeOptions["getActiveLease"];
 	budgetTracker?: BudgetTracker;
 	costTracker?: CostTracker;
+	models?: Models;
 }
 
 async function buildRequestLifecycleRuntime(
@@ -230,6 +234,7 @@ async function buildRequestLifecycleRuntime(
 				getActiveLease: input.getActiveLease,
 				budgetTracker: input.budgetTracker,
 				costTracker: input.costTracker,
+				models: input.models,
 				reviewLoop: { enabled: false },
 			});
 			try {
