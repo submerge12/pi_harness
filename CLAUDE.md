@@ -112,13 +112,60 @@ together.
 
 ## Working rules
 
-- This repo **is directly editable** (Holly's standing exception). Sibling projects
-  (MathPilot, knowledge-showcase, compass-health, Multica, pi-agent) remain **read-only** —
-  build alongside, don't modify them. Note `compass-health-agent` is a `file:` dependency.
+- **Editability (global rule — identical in all three program repos):** each of
+  `agent-orchestration-harness`, `pi-harness`, and `compass-health-agent` is edited only from a
+  session working inside that repo itself; from any other seat it is read-only reference.
+  Cross-repo changes are never applied directly — they are spec'd and handed to the owning seat
+  (pi-harness-side edits via compass-health-agent's `docs/pi-harness-pending-changes.md` + G2
+  gate, the CHA-MPV2-8/9 pattern; orchestration-level changes via AOH's coordination boards).
+  All other sibling projects (MathPilot, knowledge-showcase, Multica, pi-agent,
+  travel-assistant) are read-only from every seat.
+  **In this repo:** you are in the pi-harness seat, so this repo is directly editable (Holly's
+  standing exception); `compass-health-agent` is consumed only as a built `file:` dependency,
+  never edited from here.
 - Verify permission/sandbox/compat gates **in the target runtime**, not from an unrelated
   shell. If you can't match the runtime identity, report INCONCLUSIVE rather than asserting
   PASS.
 - "Explain X" means answer in chat — don't edit files unless explicitly asked to change them.
+
+## Cross-repo impact rules (three-repo program)
+
+This repo is the middle layer of a three-repo program:
+
+- `G:\agent-orchestration-harness` (AOH) — the **outer orchestrator**. It consumes pi-harness
+  only as a subprocess executor via its PI adapter (spawns `dist/adapter-run.js --agent <name>`,
+  JSON task-contract in → normalized result out). No code dependency in either direction.
+- `G:\compass-health-agent` (CHA) — a **domain-agent package** this repo consumes via
+  `optionalDependencies: { "compass-health-agent": "file:../compass-health-agent" }` (built
+  `dist/` only) and conditionally registers as the `compass-health` profile.
+
+Changes here that ripple outward — handle the ripple in the same change-set:
+
+1. **Adapter surface** (`src/adapter-run.ts`: CLI flags, task-contract fields, result JSON
+   shape, `DEFAULT_AGENT`). AOH mirrors this contract in
+   `agent-orchestration-harness/src/adapters/agents/pi-agent/index.ts`
+   (`PiTaskContract`/`PiResult`) and pins this repo at SHA `da0be16`. Treat the adapter-run
+   surface as a **public API**: if it must change, AOH's adapter types and SHA pin must be
+   updated too (spec the change on AOH's board; don't leave the mirror stale).
+2. **AgentProfile contract** (`src/agents/profile.ts`, `docs/AGENT-ARCHITECTURE.md`, tool
+   `accessLevel` semantics, `scheduledTasks` shape). CHA's exported `compassHealthProfileSpec`
+   is written against this contract and pins this repo at `da0be16`. A contract change
+   requires updating `src/agents/profiles/compass-health/*` and the
+   `types/compass-health-agent/` fallback stubs here, **and** telling the CHA side to update
+   its local profile types and re-pin.
+3. **`status-report.jsonl`** (repo root). This is pi-harness's outbox into AOH —
+   `agent-orchestration-harness/scripts/audit-ledger.mjs` reads it by absolute path.
+   Append-only JSONL; never rename, move, or reformat it.
+4. **compass-health profile files** (`src/agents/profiles/compass-health/`,
+   `types/compass-health-agent/`). These mirror CHA's built export surface
+   (`compassHealthProfileSpec`, `createToolContextFromEnv`, `tools/handlers`, `tools/context`).
+   Change them only to track a CHA surface change, spec'd in CHA's
+   `docs/pi-harness-pending-changes.md`. The CI job `compass-health-integration` builds
+   against CHA branch `codex/pi-harness-alignment` — keep profile, stubs, and that branch
+   consistent.
+5. **Folder locations are load-bearing.** The `file:../compass-health-agent` link is relative,
+   and AOH scripts default `PI_HARNESS_ROOT` to `G:\pi-harness`. Moving or renaming either
+   folder breaks both.
 
 ## Reference docs
 

@@ -5,6 +5,30 @@ A generic, cache-aware TypeScript LLM agent harness built by composition on top 
 domain-neutral; specialization comes from composing tools, prompts, and policy into
 **agent profiles** — not from subclassing.
 
+## 中文概览
+
+pi-harness 是构建在 PI Agent 内循环之上的通用 TypeScript Agent 运行时。大模型 API 只能给出
+一次响应；harness 负责把 prompt、context、工具、权限、状态、反馈和验证组织成可以持续执行、
+失败可见、结果可证明的任务闭环。业务能力通过 Agent Profile 组合注入，核心不依赖具体领域。
+
+已实现的重点能力：
+
+- **三层上下文与缓存经济性：** byte-stable frozen prefix、append-only warm history、压缩后的
+  cold summary；只有节省 token 的收益超过 cache bust 成本时才裁剪；
+- **工具与权限：** registry、`deny > ask > allow`、read/write/destructive/network 访问级别、
+  write-scope lease 和 worktree 隔离；
+- **完成证据：** 工具 receipt、机器可检查的 acceptance criteria、真实 git diff、blind reviewer、
+  失败后恢复基线并把 verdict/lesson 反馈给下一次 attempt；
+- **模型接入：** 原生 tool calling 与 prompted-JSON shim、失败分类、重试/预算、按精确模型配置的
+  `ModelProfile` 和 conformance gate；
+- **可观测性：** 脱敏事件日志、stage trace、成本、cache hit report 和 CJK-aware token 估算；
+- **会话与记忆：** JSONL session 持久化；memory 带来源、信任等级和 TTL，但默认用户 memory
+  store 仍是进程内实现，尚不能宣称已完成跨进程用户长期记忆。
+
+当前边界：production-path effect authorization、并发安全的 attempt scope、非文件副作用幂等、
+持久化模型资格证明正在 AOH 的 `PI-HARDENING` 后续计划中；token/event streaming、durable
+mid-loop resume、MCP、OTel 和通用并行 plan executor 尚未实现。
+
 Three ideas distinguish it from mainstream agent frameworks:
 
 1. **Cache economics as an architectural invariant.** Context is managed in three tiers
@@ -163,10 +187,14 @@ environment or `--api-key` only).
 
 The harness is a working system with 500+ behavioral tests, including an integration
 tier that drives the real PI `AgentHarness` loop (also serving as the upgrade gate for
-the pinned pi-agent-core version). Known gaps, deliberately not yet built: token/event
-streaming, durable mid-loop resume, MCP client support, OTel-standard telemetry export,
-and a parallel plan executor. The intent is to adopt standards for those layers and keep
-the originality budget on context economics and feedback integrity.
+the pinned pi-agent-core version). AOH's reviewed `PI-HARDENING` successor plan is queued
+to close production-path effect authorization, attempt-scoped write authority, logical
+effect idempotency, and persisted exact-model qualification; it is not active until the
+current AOH Control Room board closes. Other known gaps, deliberately not yet built:
+token/event streaming, durable mid-loop resume, MCP client support, OTel-standard
+telemetry export, persistent user-memory storage, and a parallel plan executor. The
+intent is to adopt standards for those layers and keep the originality budget on context
+economics and feedback integrity.
 
 ## License
 
