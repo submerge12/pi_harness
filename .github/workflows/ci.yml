@@ -87,6 +87,11 @@ jobs:
       - name: Checkout compass-health (pinned branch)
         run: git clone --depth 1 --branch fix/health-system-hardening https://github.com/submerge12/compass-health.git ../compass-health
 
+      - name: Create service databases
+        run: |
+          pg_isready -h localhost -p 5433 -U compass
+          psql "postgres://compass:compass@localhost:5433/postgres" -c 'CREATE DATABASE compass_health' || true
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
