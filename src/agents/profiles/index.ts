@@ -32,8 +32,34 @@ const builtInProfiles: AgentProfile[] = [
 	// <agent-profile-list>
 ];
 
+// ── WO-HS-10 / M11-M13: health primary / teacher / manager profiles ──
+async function loadHealthModule(name: string): Promise<{ default: AgentProfile } | undefined> {
+	try {
+		return (await import(`./compass-health-${name}/profile.ts`)) as { default: AgentProfile };
+	} catch {
+		return undefined;
+	}
+}
+
+const healthPrimaryModule = await loadHealthModule("primary");
+const healthTeacherModule = await loadHealthModule("teacher");
+const healthManagerModule = await loadHealthModule("manager");
+
+export const compassHealthPrimaryProfile: AgentProfile | undefined = healthPrimaryModule?.default;
+export const compassHealthTeacherProfile: AgentProfile | undefined = healthTeacherModule?.default;
+export const compassHealthManagerProfile: AgentProfile | undefined = healthManagerModule?.default;
+
+const healthProfiles: AgentProfile[] = [
+	...(healthPrimaryModule ? [healthPrimaryModule.default] : []),
+	...(healthTeacherModule ? [healthTeacherModule.default] : []),
+	...(healthManagerModule ? [healthManagerModule.default] : []),
+];
+
 export function registerBuiltInProfiles(): void {
 	for (const profile of builtInProfiles) {
+		if (!hasProfile(profile.name)) registerProfile(profile);
+	}
+	for (const profile of healthProfiles) {
 		if (!hasProfile(profile.name)) registerProfile(profile);
 	}
 }
