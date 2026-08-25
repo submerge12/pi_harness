@@ -21,6 +21,18 @@ import { compassHealthTeacherProfile } from "../../src/agents/profiles/compass-h
 import { compassHealthManagerProfile } from "../../src/agents/profiles/compass-health-manager/profile.ts";
 import { compassHealthPrimaryProfile } from "../../src/agents/profiles/index.ts";
 
+import type { ToolRegistration } from "../../src/tools/types.ts";
+
+/** Resolve a profile's tools array whether stored directly or as a factory. */
+function resolveTools(profile: { tools?: readonly unknown[] }): ToolRegistration[] {
+  const first = profile.tools?.[0];
+  if (first === undefined) return [];
+  if (typeof first === "function") {
+    return (first as () => ToolRegistration[])();
+  }
+  return profile.tools as ToolRegistration[];
+}
+
 // ── teacher rubric (pure function extracted from the system prompt rules) ──
 
 interface ReviewInput {
@@ -68,7 +80,7 @@ describe("J10: teacher catches ignored constraints", () => {
     expect(policy.defaults.network).toBe("deny");
     expect(policy.defaults["read-only"]).toBe("allow");
     // And every registered tool is read-only.
-    const tools = compassHealthTeacherProfile.tools?.[0]?.() ?? [];
+    const tools = resolveTools(compassHealthTeacherProfile);
     expect(tools.length).toBeGreaterThan(0);
     for (const t of tools) expect(t.accessLevel).toBe("read-only");
   });
@@ -106,7 +118,7 @@ describe("J11: manager observation discipline", () => {
   it("manager profile denies all writes", () => {
     const policy = compassHealthManagerProfile.policy!;
     expect(policy.defaults.write).toBe("deny");
-    const tools = compassHealthManagerProfile.tools?.[0]?.() ?? [];
+    const tools = resolveTools(compassHealthManagerProfile);
     for (const t of tools) expect(t.accessLevel).toBe("read-only");
   });
 });
@@ -165,7 +177,8 @@ describe("J12: primary failure falls back to legacy safely", () => {
   });
 
   it("all three health profiles are registered-shaped with distinct names", () => {
-    expect(compassHealthPrimaryProfile.name).toBe("compass-health-primary");
+    expect(compassHealthPrimaryProfile).toBeDefined();
+    expect(compassHealthPrimaryProfile!.name).toBe("compass-health-primary");
     expect(compassHealthTeacherProfile.name).toBe("compass-health-teacher");
     expect(compassHealthManagerProfile.name).toBe("compass-health-manager");
   });
