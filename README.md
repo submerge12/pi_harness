@@ -18,6 +18,7 @@ observable results. Domain behavior is added through composable Agent Profiles.
 - JSONL sessions, checkpoints, retries, and session budgets;
 - memory entries with source, trust level, and expiry;
 - worker-reviewer repair loops and machine-checkable acceptance criteria;
+- opt-in [automatic goal verification and strict PowerShell 7 sessions](docs/goal-gate.md);
 - redacted event logs, receipts, traces, and cache reports;
 - pluggable Agent Profiles for coding, research, data analysis, and domain products.
 

@@ -27,6 +27,8 @@ Generated/vendor/runtime folders intentionally not expanded: `.git/`, `node_modu
 
 | File | Responsibility |
 | --- | --- |
+| `src/goal/goal-gate.ts` | Opt-in raw-request completion control: host evidence, independent tool-free judge, freshness recheck, bounded continuation, cancellation and timeout. |
+| `src/execution/powershell7.ts` | Explicit PowerShell 7 executable/version resolution with no Windows PowerShell fallback; reuses Pi execution capabilities. |
 | `src/index.ts` | Main public barrel export for library consumers. |
 | `src/harness.ts` | Core `GenericHarness`: model/session setup, prompt execution, lifecycle integration, retries/model-failure classification, compaction, pruning, cost/budget/event logging, cache reports, and default tool wiring. |
 | `src/config.ts` | Harness configuration types, defaults, permission policy defaults, run-policy cloning, and config resolution. |

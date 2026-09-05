@@ -1,4 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { GoalGateOptions, GoalResult } from "../goal/goal-gate.ts";
 import type { TaskContract } from "../contract/index.ts";
 import type { CheckpointStore } from "../checkpoint/index.ts";
 import type { FrozenPrefix, PrefixParts } from "../context/lifecycle.ts";
@@ -96,6 +97,8 @@ export interface AttemptDiff {
 }
 
 export interface AgentRequestDeps {
+	goalGate?: GoalGateOptions;
+	goalSignal?: AbortSignal;
 	skillRegistry: SkillCardRegistry;
 	intake?: IntakeOptions;
 	routing: RoutingOptions;
@@ -123,6 +126,7 @@ export type AgentRequestResult =
 			evidenceRefs: readonly string[];
 			reviewVerdicts?: readonly ReviewVerdict[];
 			completionGateFailures?: readonly CompletionGateFailure[];
+			goal?: GoalResult;
 			loopState?: "DONE" | "NEEDS_HUMAN" | "FAILED";
 			modelFailure?: ModelFailureClassification;
 			diffRef?: string;

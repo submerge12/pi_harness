@@ -24,6 +24,7 @@ export * from "./evidence/index.ts";
 export * from "./checkpoint/index.ts";
 export * from "./feedback/index.ts";
 export * from "./harness.ts";
+export * from "./goal/goal-gate.ts";
 export * from "./intake/index.ts";
 export * from "./lifecycle/index.ts";
 export * from "./memory/index.ts";
@@ -74,3 +75,5 @@ export * from "./tools/permission.ts";
 export * from "./tools/registry.ts";
 export * from "./tools/sandbox.ts";
 export * from "./tools/types.ts";
+
+export * from "./execution/powershell7.ts";

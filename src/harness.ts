@@ -20,6 +20,7 @@ import {
 import { completeSimple, getEnvApiKey } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, KnownProvider, Message, Model, SimpleStreamOptions, Tool } from "@earendil-works/pi-ai";
 import { isAbsolute, resolve } from "node:path";
+import { validateGoalGateOptions } from "./goal/goal-gate.ts";
 import { CacheStrategyEngine } from "./cache/strategy-engine.ts";
 import type { CacheStrategyDecision } from "./cache/types.ts";
 import type { HarnessConfig, ResolvedHarnessConfig } from "./config.ts";
@@ -207,6 +208,8 @@ export class GenericHarness {
 	private readonly env?: ExecutionEnv;
 	private readonly session?: Session;
 	private readonly inner: GenericHarnessInner;
+	private goalRequestController?: AbortController;
+	private goalRequestTail: Promise<void> = Promise.resolve();
 	private readonly requestLifecycle: ReturnType<typeof createRequestLifecycleDeps>;
 	private readonly localListeners = new Set<(event: AgentHarnessEvent, signal?: AbortSignal) => Promise<void> | void>();
 	private readonly unsubscribes: Array<() => void> = [];
@@ -225,6 +228,7 @@ export class GenericHarness {
 		this.budgetTracker = options.budgetTracker ?? (this.config.budget ? new BudgetTracker(this.config.budget) : undefined);
 		this.costTracker = options.costTracker ?? new CostTracker();
 		this.requestLifecycle = createRequestLifecycleDeps(this.config, options.requestLifecycle);
+		if (this.requestLifecycle.goalGate) validateGoalGateOptions(this.requestLifecycle.goalGate);
 		const startupModel = tryResolveHarnessModel(this.config);
 		if (startupModel) warnIfModelProfileCostDrift(startupModel);
 		this.inner = options.inner ?? this.createInner(options);
@@ -381,6 +385,29 @@ export class GenericHarness {
 	}
 
 	async runRequest(input: AgentRequestInput, promptOptions?: AgentHarnessPromptOptions): Promise<AgentRequestResult> {
+		if (this.disposed) throw new Error("harness disposed");
+		if (!this.requestLifecycle.goalGate) return await this.executeRequestLifecycle(input, promptOptions);
+		// New user input invalidates old automatic continuations. Only one request owns the session.
+		this.goalRequestController?.abort();
+		const controller = new AbortController();
+		this.goalRequestController = controller;
+		const run = this.goalRequestTail.then(() => this.executeRequestLifecycle(input, promptOptions, controller.signal));
+		this.goalRequestTail = run.then(() => {}, () => {});
+		try {
+			return await run;
+		} finally {
+			if (this.goalRequestController === controller) this.goalRequestController = undefined;
+		}
+	}
+
+	private async executeRequestLifecycle(input: AgentRequestInput, promptOptions?: AgentHarnessPromptOptions, goalSignal?: AbortSignal): Promise<AgentRequestResult> {
+		if (goalSignal?.aborted) {
+			return {
+				entryStage: "execute", message: this.assistantTextMessage("Goal CANCELLED: Request cancelled or superseded."),
+				goal: { state: "CANCELLED", continuations: 0, reason: "Request cancelled or superseded." },
+				evidenceRefs: [], stageTrace: [], recalledMemories: [], writtenMemories: [],
+			};
+		}
 		return await runAgentRequest({
 			prompt: async (text, options) => await this.prompt(
 				text,
@@ -398,7 +425,7 @@ export class GenericHarness {
 				),
 			),
 			skill: async (name, additionalInstructions) => await this.skill(name, additionalInstructions),
-		}, input, this.requestLifecycle);
+		}, input, { ...this.requestLifecycle, goalSignal });
 	}
 
 	getActiveTaskToolNames(): readonly string[] | undefined {
@@ -457,6 +484,7 @@ export class GenericHarness {
 	}
 
 	async abort(): Promise<AbortResult> {
+		this.goalRequestController?.abort();
 		return await this.inner.abort();
 	}
 
@@ -510,6 +538,11 @@ export class GenericHarness {
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
+		if (this.goalRequestController) {
+			this.goalRequestController.abort();
+			await this.inner.abort();
+			await this.goalRequestTail;
+		}
 		for (const unsubscribe of this.unsubscribes.splice(0).reverse()) unsubscribe();
 		for (const disposer of this.disposers.splice(0).reverse()) await disposer();
 		await this.env?.cleanup();

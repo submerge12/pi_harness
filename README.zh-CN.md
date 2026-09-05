@@ -17,6 +17,7 @@ pi-harness 为模型响应补充完整的任务运行能力：上下文管理、
 - JSONL session、checkpoint、重试和 session budget；
 - 带来源、信任等级和有效期的 memory；
 - worker-reviewer 返修闭环和机器可检查的验收标准；
+- 可显式启用的[自动目标判断与严格 PowerShell 7 会话](docs/goal-gate.md)；
 - 脱敏 event log、receipt、trace 和 cache report；
 - 面向编程、研究、数据分析和领域产品的可插拔 Agent Profile。
 
