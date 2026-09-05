@@ -14,6 +14,7 @@ import { Type } from "typebox";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ToolRegistration } from "../../../tools/types.ts";
 import type { AgentProfile } from "../../profile.ts";
+import { healthProfileDisposer, resolveHealthToolRegistrations } from "../compass-health-mcp.ts";
 
 const BFF_BASE = process.env["PI_HEALTH_BFF_URL"] ?? "http://127.0.0.1:8000";
 const BFF_TOKEN = process.env["PI_HEALTH_BFF_TOKEN"] ?? "";
@@ -206,7 +207,8 @@ const SYSTEM_PROMPT = [
   "",
   "Hard rules:",
   "1. ALWAYS call health_get_daily_state first when answering 'what today' questions.",
-  "2. ALWAYS consult health_get_constraints before any training suggestion.",
+  "2. ALWAYS consult the active-constraints tool (health_get_constraints via the",
+  "   BFF, health_get_active_constraints via MCP) before any training suggestion.",
   "3. Every write MUST be followed by reading back the daily state; never claim",
   "   success without verified data.",
   "4. If a commit returns needs_confirmation, show the candidate list to the user;",
@@ -221,8 +223,15 @@ const compassHealthPrimaryProfileAdapter = {
   description:
     "Real-user health agent that operates exclusively through the authenticated BFF/API with mandatory read-back verification.",
   systemPrompt: SYSTEM_PROMPT,
-  tools: [() => createPrimaryToolRegistrations()],
-  install: async () => undefined,
+  tools: [
+    (context) =>
+      resolveHealthToolRegistrations({
+        profileName: "compass-health-primary",
+        config: context.config,
+        inProcess: () => createPrimaryToolRegistrations(),
+      }),
+  ],
+  install: async () => healthProfileDisposer("compass-health-primary"),
   skills: [],
   templates: [],
 } satisfies AgentProfile;

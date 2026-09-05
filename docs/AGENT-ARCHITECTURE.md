@@ -36,6 +36,72 @@ Tools can be defined two ways:
 
 The travel agent uses a factory (`travelToolFactory`) because it needs API keys and database connections at construction time.
 
+### Tool source: in-process or MCP
+
+A profile's tools can also come from an MCP server instead of its own factories.
+The `toolSource` config field selects the route:
+
+| value | meaning |
+| --- | --- |
+| `"in-process"` | Build tools from the profile's factories. **Default.** |
+| `"mcp"` | Spawn the profile's MCP server, list its tools, and adapt each one. |
+
+`toolSource` is accepted at the top level of a config file and per agent under
+`agents.<name>`, and can be set for a single run with `PI_HARNESS_TOOL_SOURCE`.
+Precedence is config field, then env var, then `"in-process"`.
+
+MCP tools **replace** the in-process ones rather than joining them, because the
+tool registry rejects duplicate names.
+
+**Fallback is automatic.** If the server cannot be spawned, the handshake fails,
+or the opening sequence errors, the profile logs a warning naming the cause and
+continues with its in-process tools. A missing MCP server degrades the agent's
+reach, never its ability to boot.
+
+**Run ledger.** compass-health requires every call to carry a run handle. The
+adapter performs the ritual once per session and threads the result into each
+call whose schema declares it:
+
+1. `health_get_system_status` — liveness, before anything is written.
+2. `health_begin_run` — mints the `runHandle`.
+3. Every adapted call receives that handle plus a fresh `idempotencyKey`. Both
+   are stripped from the schema the model sees, so they cannot be hallucinated.
+4. `health_end_run` on close, with `outcome: "completed"`.
+
+The two ledger tools are driven by the adapter and never exposed to the model.
+
+**Environment.** The server inherits this process's environment; these are
+merged over it, and an already-set variable always wins:
+
+| variable | default |
+| --- | --- |
+| `COMPASS_HEALTH_ACTOR` | `pi-harness` |
+| `COMPASS_HEALTH_ACTOR_TYPE` | `agent` |
+| `COMPASS_HEALTH_RUNTIME_NAME` | `pi-harness` |
+| `COMPASS_HEALTH_ALLOW_USER_PROVISIONING` | `false` |
+| `COMPASS_HEALTH_MEDIA_RUNTIME` | `embedded` |
+| `COMPASS_HEALTH_PROJECTION_WORKER_MODE` | `embedded` |
+| `COMPASS_HEALTH_USER_BINDING` | `default-user` |
+| `DATABASE_URL` | `COMPASS_HEALTH_DATABASE_URL`, else the ambient `DATABASE_URL` |
+
+Where the server lives is overridable too: `PI_HARNESS_HEALTH_MCP_ENTRY` (the
+script, default `../compass-health-agent/dist/mcp/stdio.js` relative to this
+repo), `PI_HARNESS_HEALTH_MCP_COMMAND` (default: this Node binary), and
+`PI_HARNESS_HEALTH_MCP_CWD`.
+
+The client pins protocol revision `2026-07-28`, which compass-health serves
+natively; it never falls back to the 2025 handshake. A failed startup quotes the
+server's own last stderr lines, so causes like an unreachable database name
+themselves instead of surfacing as an opaque negotiation error.
+
+The integration test that exercises the real server is gated:
+
+```bash
+PI_HARNESS_MCP_INTEGRATION=1 \
+DATABASE_URL=postgres://compass:compass@localhost:5433/compass_health \
+npx vitest --run test/integration/mcp-health-tool-source.test.ts
+```
+
 ## How an Agent Boots
 
 ```
