@@ -10,6 +10,7 @@ import { getProfile } from "./agents/registry.ts";
 import { loadConfigLayerOverrides } from "./config-file.ts";
 import type { HarnessConfig } from "./config.ts";
 import { taskContractSchema, type TaskContract } from "./contract/index.ts";
+import { listModelProfiles } from "./model-profiles/index.ts";
 import {
 	createPiRuntimeAdapter,
 	normalizedResultSchema,
@@ -27,6 +28,7 @@ export interface AdapterRunHarnessOptions {
 	agent: string;
 	cwd?: string;
 	thinkingLevel?: string;
+	modelId?: string;
 }
 
 export interface AdapterRunCommandOptions {
@@ -41,6 +43,7 @@ interface ParsedAdapterRunArgs {
 	agent: string;
 	cwd?: string;
 	thinkingLevel?: string;
+	modelId?: string;
 	taskJson?: string;
 	taskFile?: string;
 	help: boolean;
@@ -66,6 +69,7 @@ export async function runAdapterCommand(options: AdapterRunCommandOptions = {}):
 			agent: parsed.agent,
 			cwd: parsed.cwd,
 			thinkingLevel: parsed.thinkingLevel,
+			modelId: parsed.modelId,
 		});
 		const result = await createPiRuntimeAdapter(harness).run(taskContract);
 		writeNormalizedResult(out, normalizeRunnerOutput(result));
@@ -89,6 +93,7 @@ export async function createAdapterRunHarness(options: AdapterRunHarnessOptions)
 		...(options.thinkingLevel !== undefined
 			? { thinkingLevel: options.thinkingLevel as HarnessConfig["thinkingLevel"] }
 			: {}),
+		...(options.modelId !== undefined ? { modelId: options.modelId } : {}),
 	};
 	const config = await loadConfigLayerOverrides({ cwd: options.cwd, cli: cliConfig });
 	const agent = config.agent ?? options.agent;
@@ -136,6 +141,15 @@ export function parseAdapterRunArgs(args: readonly string[]): ParsedAdapterRunAr
 			index++;
 			continue;
 		}
+		if (arg.startsWith("--model=")) {
+			parsed.modelId = arg.slice("--model=".length);
+			continue;
+		}
+		if (arg === "--model") {
+			parsed.modelId = readOptionValue(args, index, "--model");
+			index++;
+			continue;
+		}
 		if (arg.startsWith("--task-json=")) {
 			parsed.taskJson = arg.slice("--task-json=".length);
 			continue;
@@ -174,10 +188,11 @@ function readOptionValue(args: readonly string[], index: number, option: string)
 
 function formatAdapterRunHelp(): string {
 	return [
-		"usage: pi-harness-adapter-run [--agent name] [--cwd path] [--thinking level] [--task-json json | --task-file path]",
+		"usage: pi-harness-adapter-run [--agent name] [--cwd path] [--thinking level] [--model id] [--task-json json | --task-file path]",
 		"",
 		"Reads a TaskContract JSON document from stdin by default and writes a NormalizedResult JSON document to stdout.",
 		"Thinking level: off | minimal | low | medium | high | xhigh (per-run override of the agent thinkingLevel).",
+		`Model: one of ${listModelProfiles().map((profile) => profile.modelId).join(" | ")} (per-run override of the agent modelId).`,
 	].join("\n");
 }
 

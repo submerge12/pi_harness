@@ -119,4 +119,26 @@ describe("adapter-run entrypoint", () => {
 		expect(output.status).toBe("failed");
 		expect(output.message).toContain("Invalid TaskContract");
 	});
+
+	it("passes --model and --thinking through to the harness factory", async () => {
+		const stdout = memoryWriter();
+		const calls: unknown[] = [];
+		const harnessOptions: unknown[] = [];
+
+		const exitCode = await runAdapterCommand({
+			args: ["--agent", "compass-health", "--model", "deepseek-v4-flash", "--thinking=low"],
+			stdin: stdinFrom(JSON.stringify(taskContract)),
+			stdout,
+			stderr: memoryWriter(),
+			createHarness: async (options) => {
+				harnessOptions.push(options);
+				return fakeHarness(calls);
+			},
+		});
+
+		expect(exitCode).toBe(0);
+		expect(harnessOptions).toEqual([
+			{ agent: "compass-health", cwd: undefined, thinkingLevel: "low", modelId: "deepseek-v4-flash" },
+		]);
+	});
 });
