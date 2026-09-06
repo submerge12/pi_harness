@@ -1,3 +1,4 @@
+import { deepSeekV4FlashProfile } from "./deepseek-v4-flash.ts";
 import { deepSeekV4ProProfile } from "./deepseek-v4-pro.ts";
 import type { ModelProfile } from "./types.ts";
 
@@ -60,5 +61,6 @@ export function findModelProfileForModel(model: ModelProfileMatchInput): ModelPr
 
 /** Built-in profiles are seeded at module load so generic modules can consult the seam unconditionally. */
 registerModelProfile(deepSeekV4ProProfile);
+registerModelProfile(deepSeekV4FlashProfile);
 
 export const DEFAULT_MODEL_PROFILE: ModelProfile = deepSeekV4ProProfile;

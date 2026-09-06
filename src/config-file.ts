@@ -47,6 +47,7 @@ const permissionProfileSchema = Union([
 	Literal("workspace-write"),
 	Literal("network"),
 ]);
+const toolSourceSchema = Union([Literal("mcp"), Literal("in-process")]);
 
 const streamOptionsSchema = TypePartial(
 	TypeObject(
@@ -198,6 +199,7 @@ const agentOverrideSchema = TypePartial(
 			systemPrompt: TypeString(),
 			activeToolNames: TypeArray(TypeString()),
 			useDefaultTools: TypeBoolean(),
+			toolSource: toolSourceSchema,
 			sandbox: sandboxSchema,
 			policy: policySchema,
 			permissionProfile: permissionProfileSchema,
@@ -232,6 +234,7 @@ const configFileSchema = TypePartial(
 			systemPrompt: TypeString(),
 			activeToolNames: TypeArray(TypeString()),
 			useDefaultTools: TypeBoolean(),
+			toolSource: toolSourceSchema,
 			sandbox: sandboxSchema,
 			policy: policySchema,
 			permissionProfile: permissionProfileSchema,
@@ -264,6 +267,7 @@ const topLevelConfigKeys = new Set([
 	"systemPrompt",
 	"activeToolNames",
 	"useDefaultTools",
+	"toolSource",
 	"sandbox",
 	"policy",
 	"permissionProfile",

@@ -18,6 +18,7 @@ import {
 	type RunPolicy,
 } from "./policy/profiles.ts";
 import type { SubjectPolicyRule } from "./policy/types.ts";
+import type { ToolSource } from "./tools/mcp/types.ts";
 import type {
 	AskPermissionCallback,
 	PermissionLevel,
@@ -105,6 +106,12 @@ export interface HarnessConfig {
 	toolRegistrations?: StoredToolRegistration[];
 	activeToolNames?: string[];
 	useDefaultTools?: boolean;
+	/**
+	 * Where a profile that supports it obtains its tools. `in-process` (the
+	 * default) uses the profile's own tool factories; `mcp` adapts an MCP
+	 * server's tool catalog, falling back to in-process when it is unavailable.
+	 */
+	toolSource?: ToolSource;
 	resources?: AgentHarnessResources;
 	sandbox?: SandboxConfig;
 	policy?: PermissionPolicyConfig;
@@ -141,6 +148,7 @@ export interface ResolvedHarnessConfig {
 	toolRegistrations?: StoredToolRegistration[];
 	activeToolNames?: string[];
 	useDefaultTools: boolean;
+	toolSource?: ToolSource;
 	resources?: AgentHarnessResources;
 	sandbox?: SandboxConfig;
 	policy: PermissionPolicy;
@@ -269,6 +277,7 @@ export function resolveHarnessConfig(config: HarnessConfig = {}): ResolvedHarnes
 		toolRegistrations: config.toolRegistrations ? [...config.toolRegistrations] : undefined,
 		activeToolNames: config.activeToolNames ? [...config.activeToolNames] : undefined,
 		useDefaultTools: config.useDefaultTools ?? config.tools === undefined,
+		toolSource: config.toolSource,
 		resources: config.resources
 			? {
 					promptTemplates: config.resources.promptTemplates ? [...config.resources.promptTemplates] : undefined,

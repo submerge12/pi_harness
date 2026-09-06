@@ -14,6 +14,8 @@ import {
 import type { AgentRequestDeps, RequestMemoryOptions, RequestWorkerReviewerLoopOptions } from "./types.ts";
 
 export interface RequestLifecycleRuntimeOptions {
+	/** Automatic completion control for raw requests; TaskContracts retain their review loop. */
+	goalGate?: AgentRequestDeps["goalGate"];
 	skillRegistry?: SkillCardRegistry;
 	skillBodies?: ReadonlyMap<string, string> | Record<string, string>;
 	memoryStore?: InMemoryUserMemoryStore;
@@ -53,6 +55,7 @@ export function createRequestLifecycleDeps(
 		memory,
 		trace: options.trace,
 		workerReviewerLoop: options.workerReviewerLoop,
+		goalGate: options.goalGate,
 		prefix: createFrozenPrefix(getPrefixParts()),
 		getPrefixParts,
 		loadSkillBody: (skill) => readSkillBody(skillBodies, skill.name),

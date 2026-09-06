@@ -1,3 +1,4 @@
+import { runGoalGate, type GoalResult } from "../goal/goal-gate.ts";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { type TaskContract } from "../contract/index.ts";
 import { assertPrefixInvariant, createFrozenPrefix, type FrozenPrefix } from "../context/lifecycle.ts";
@@ -117,23 +118,51 @@ export async function runAgentRequest(
 	if (deps.getPrefixParts) assertPrefixInvariant(frozenPrefix, deps.getPrefixParts());
 	const executionText = composeExecutionText(input.rawRequest, recalledMemories, dynamicSuffix);
 	let message: AssistantMessage;
+	let goal: GoalResult | undefined;
 	let modelFailure: ModelFailureClassification | undefined;
 	try {
-		message = await executeRequest(harness, executionText, selectedSkill);
+		if (deps.goalGate) {
+			const result = await runGoalGate({
+				goal: input.rawRequest,
+				options: deps.goalGate,
+				signal: deps.goalSignal,
+				execute: async (continuation) => {
+					try {
+						return continuation === undefined
+							? await executeRequest(harness, executionText, selectedSkill)
+							: await harness.prompt(continuation);
+					} catch (error) {
+						if (!isModelFailureError(error)) throw error;
+						modelFailure = error.classification;
+						return modelFailureAssistantMessage(error);
+					}
+				},
+			});
+			goal = result.goal;
+			message = goal.state === "COMPLETE" && result.message
+				? result.message
+				: lifecycleAssistantMessage(`Goal ${goal.state}: ${goal.reason}`);
+			await deps.trace?.append({ type: "stage", data: { stage: "goal-gate", ...goal } });
+		} else {
+			message = await executeRequest(harness, executionText, selectedSkill);
+		}
 	} catch (error) {
 		if (!isModelFailureError(error)) throw error;
 		message = modelFailureAssistantMessage(error);
 		modelFailure = error.classification;
+		if (deps.goalGate) goal = { state: "FAILED", continuations: 0, reason: "Worker model failed." };
 	}
 	await recordStage(deps, stageTrace, { stage: "execute", status: "pass", detail: selectedSkill?.name ?? front.route?.route.name });
 
-	const writtenMemories = modelFailure ? [] : writeCandidateMemories(deps, input.rawRequest, message, now);
+	const writtenMemories = modelFailure || (goal && goal.state !== "COMPLETE")
+		? [] : writeCandidateMemories(deps, input.rawRequest, message, now);
 	await recordStage(deps, stageTrace, { stage: "memory-write", status: writtenMemories.length > 0 ? "pass" : "skip", detail: String(writtenMemories.length) });
 
 	return {
 		entryStage: "execute",
 		message,
 		evidenceRefs: [],
+		...(goal ? { goal } : {}),
 		...(modelFailure ? { modelFailure } : {}),
 		route: front.route,
 		selectedSkill,

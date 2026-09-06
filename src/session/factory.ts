@@ -1,3 +1,4 @@
+import { createPowerShell7ExecutionEnv } from "../execution/powershell7.ts";
 import { JsonlSessionRepo, type JsonlSessionMetadata, type Session } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { repairJsonlTail, type JsonlTailRecoveryResult } from "./recovery.ts";
@@ -12,6 +13,7 @@ export {
 } from "./domain-session.ts";
 
 export interface JsonlSessionFactoryOptions {
+	shellMode?: "powershell7";
 	cwd: string;
 	sessionsRoot: string;
 	shellPath?: string;
@@ -37,12 +39,15 @@ interface JsonlSessionRepoFactoryResult {
 	repo: JsonlSessionRepo;
 }
 
-function createSessionRepo(options: JsonlSessionFactoryOptions): JsonlSessionRepoFactoryResult {
-	const env = new NodeExecutionEnv({
+async function createSessionRepo(options: JsonlSessionFactoryOptions): Promise<JsonlSessionRepoFactoryResult> {
+	const envOptions = {
 		cwd: options.cwd,
 		shellPath: options.shellPath,
 		shellEnv: options.shellEnv,
-	});
+	};
+	const env = options.shellMode === "powershell7"
+		? await createPowerShell7ExecutionEnv(envOptions)
+		: new NodeExecutionEnv(envOptions);
 	const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: options.sessionsRoot });
 	return { env, repo };
 }
@@ -54,13 +59,13 @@ function compareNewestFirst(first: JsonlSessionMetadata, second: JsonlSessionMet
 }
 
 export async function createJsonlSession(options: JsonlSessionFactoryOptions): Promise<JsonlSessionFactoryResult> {
-	const { env, repo } = createSessionRepo(options);
+	const { env, repo } = await createSessionRepo(options);
 	const session = await repo.create({ cwd: options.cwd });
 	return { env, session };
 }
 
 export async function openJsonlSession(options: OpenJsonlSessionOptions): Promise<JsonlSessionFactoryResult> {
-	const { env, repo } = createSessionRepo(options);
+	const { env, repo } = await createSessionRepo(options);
 	const sessions = await repo.list();
 	const metadata = sessions.find((session) => session.id === options.sessionId);
 	if (!metadata) throw new Error(`session not found: ${options.sessionId}`);
@@ -71,7 +76,7 @@ export async function openJsonlSession(options: OpenJsonlSessionOptions): Promis
 }
 
 export async function listSessions(options: JsonlSessionListOptions): Promise<JsonlSessionMetadata[]> {
-	const { env, repo } = createSessionRepo(options);
+	const { env, repo } = await createSessionRepo(options);
 	try {
 		const sessions = await repo.list(options.all ? undefined : { cwd: options.cwd });
 		return [...sessions].sort(compareNewestFirst);

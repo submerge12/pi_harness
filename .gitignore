@@ -19,6 +19,7 @@ docs/*
 !docs/request-lifecycle-architecture.md
 !docs/harness-engineering-framework.md
 !docs/file-responsibility-summary.md
+!docs/goal-gate.md
 NEXT-STEPS.md
 status-report.jsonl
 
